@@ -22,6 +22,7 @@ class Strategy:
     resume_checkpoint: bool
     category: str
     risk: str
+    train_command: str = ""  # Agent-provided training command
 
 
 class PromptBuilder:
@@ -31,6 +32,8 @@ class PromptBuilder:
             PromptBuilder._system_section(config, state),
             PromptBuilder._hardware_section(state),
             PromptBuilder._state_section(state),
+            PromptBuilder._last_round_section(state),
+            PromptBuilder._compressed_history_section(state),
             PromptBuilder._taboo_section(state),
             PromptBuilder._hints_section(state),
             PromptBuilder._rules_section(config, state),
@@ -76,6 +79,40 @@ class PromptBuilder:
             f"  Score trajectory: {trajectory_str}\n"
             f"  Current round: {state.current_round}"
         )
+
+    @staticmethod
+    def _last_round_section(state):
+        if not state.rounds:
+            return ""
+        last = state.rounds[-1]
+        lines = [f"LAST ROUND RESULTS (round {last.round}, {len(last.experiments)} experiments):"]
+        for e in last.experiments:
+            line = f"  - {e.id} [{e.strategy}]: score={e.score}, status={e.status}"
+            if e.actual_vram_gb > 0:
+                line += f", vram={e.actual_vram_gb:.1f}GB"
+            if e.actual_epoch_seconds > 0:
+                line += f", epoch_time={e.actual_epoch_seconds:.0f}s"
+            if e.error:
+                line += f", error={e.error}"
+            lines.append(line)
+        lines.append(f"  Winners: {', '.join(last.winners) if last.winners else 'none'}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _compressed_history_section(state):
+        if len(state.rounds) <= 1:
+            return ""
+        lines = ["COMPRESSED HISTORY:"]
+        for r in state.rounds[:-1]:
+            best_exp = max(r.experiments, key=lambda e: e.score) if r.experiments else None
+            best_info = f"best={best_exp.score:.2f} ({best_exp.strategy})" if best_exp else "no results"
+            ok_count = sum(1 for e in r.experiments if e.status == "ok")
+            fail_count = len(r.experiments) - ok_count
+            lines.append(
+                f"  Round {r.round}: {best_info}, {ok_count} ok / {fail_count} failed, "
+                f"phase1={r.phase1_minutes:.0f}m, phase2={r.phase2_minutes:.0f}m"
+            )
+        return "\n".join(lines)
 
     @staticmethod
     def _taboo_section(state):
@@ -132,6 +169,7 @@ class OutputParser:
                 resume_checkpoint=d["resume_checkpoint"],
                 category=d.get("category", "unknown"),
                 risk=d.get("risk", "low"),
+                train_command=d.get("train_command", ""),
             )
             for d in data
         ]

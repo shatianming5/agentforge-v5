@@ -2,9 +2,11 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
+import subprocess
 import time
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from subprocess import Popen
 
@@ -20,6 +22,10 @@ class Monitor:
     NAN_PATTERN = re.compile(r"(?:loss|train_loss|val_loss)\s*[=:]\s*nan", re.IGNORECASE)
     CHECK_INTERVAL = 10
 
+    NAN_CHECK_EVERY = 3   # every 30s (3 * 10s interval)
+    DISK_CHECK_EVERY = 6  # every 60s
+    VRAM_CHECK_EVERY = 6  # every 60s
+
     def __init__(self, processes, timeout, log_paths=None, workdir=None, disk_threshold=0.9):
         self._processes = processes  # list of (index, proc, log_path)
         self._timeout = timeout
@@ -30,6 +36,8 @@ class Monitor:
         self._events: list[MonitorEvent] = []
         self._lock = threading.Lock()
         self._killed: set[int] = set()
+        self._vram_history: dict[int, list[tuple[float, float]]] = {}  # idx -> [(time, vram_mb)]
+        self._completion_times: list[float] = []  # for straggler median
 
     @property
     def events(self):
@@ -51,14 +59,21 @@ class Monitor:
         while self._any_alive():
             for idx, proc, log_path in self._processes:
                 if idx in self._killed or proc.poll() is not None:
+                    # Track completion time for straggler median
+                    if proc.poll() is not None and idx not in self._killed:
+                        elapsed = time.time() - self._start_time
+                        if elapsed not in self._completion_times:
+                            self._completion_times.append(elapsed)
                     continue
                 if self._is_timed_out(proc):
                     self._kill(idx, proc, "timeout", f"exceeded {self._timeout}s")
                     continue
-                if counter % 3 == 0 and self._check_nan_in_log(idx, log_path):
+                if counter % self.NAN_CHECK_EVERY == 0 and self._check_nan_in_log(idx, log_path):
                     self._kill(idx, proc, "nan", "NaN detected in loss")
                     continue
-            if counter % 6 == 0 and self._check_disk_critical():
+                if counter % self.VRAM_CHECK_EVERY == 0:
+                    self._check_vram_trend(idx, proc)
+            if counter % self.DISK_CHECK_EVERY == 0 and self._check_disk_critical():
                 self._add_event(-1, "disk", "Disk usage critical")
             self._check_stragglers()
             counter += 1
@@ -86,14 +101,75 @@ class Monitor:
         usage = shutil.disk_usage(self._workdir)
         return (usage.used / usage.total) > self._disk_threshold
 
+    def _check_vram_trend(self, index, proc):
+        """Check for VRAM leak by querying nvidia-smi and extrapolating."""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-compute-apps=pid,used_memory",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return
+        now = time.time()
+        for line in result.stdout.strip().split("\n"):
+            parts = line.strip().split(", ")
+            if len(parts) == 2:
+                try:
+                    pid, mem_mb = int(parts[0]), float(parts[1])
+                except ValueError:
+                    continue
+                if pid == proc.pid:
+                    history = self._vram_history.setdefault(index, [])
+                    history.append((now, mem_mb))
+                    if len(history) >= 3:
+                        self._extrapolate_oom(index, proc, history)
+                    break
+
+    def _extrapolate_oom(self, index, proc, history):
+        """Linear extrapolation: if VRAM will exceed GPU total before timeout, kill."""
+        times = [h[0] - history[0][0] for h in history]
+        mems = [h[1] for h in history]
+        if len(times) < 3 or times[-1] - times[0] < 60:
+            return
+        slope = (mems[-1] - mems[0]) / (times[-1] - times[0])
+        if slope <= 0:
+            return  # No leak
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5,
+            )
+            total_mb = float(result.stdout.strip().split("\n")[0])
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            return
+        remaining_time = self._timeout - (time.time() - self._start_time)
+        projected = mems[-1] + slope * remaining_time
+        if projected > total_mb * 0.95:
+            self._kill(index, proc, "vram_leak",
+                       f"VRAM trend {slope:.0f}MB/s, projected {projected:.0f}MB > {total_mb:.0f}MB")
+
     def _check_stragglers(self):
         alive = [(i, p) for i, p, _ in self._processes if p.poll() is None and i not in self._killed]
         done = [(i, p) for i, p, _ in self._processes if p.poll() is not None or i in self._killed]
         if len(alive) == 1 and len(done) >= 2:
-            elapsed = time.time() - self._start_time
-            if elapsed > self._timeout * 0.8:
-                idx, proc = alive[0]
-                self._kill(idx, proc, "straggler", "last experiment, 80% of timeout")
+            if self._completion_times:
+                sorted_times = sorted(self._completion_times)
+                mid = len(sorted_times) // 2
+                median_time = sorted_times[mid]
+                grace = median_time * 0.2
+                elapsed = time.time() - self._start_time
+                if elapsed > median_time + grace:
+                    idx, proc = alive[0]
+                    self._kill(idx, proc, "straggler",
+                               f"exceeded median({median_time:.0f}s) + 20% grace")
+            else:
+                elapsed = time.time() - self._start_time
+                if elapsed > self._timeout * 0.8:
+                    idx, proc = alive[0]
+                    self._kill(idx, proc, "straggler", "last experiment, 80% of timeout")
 
     def _kill(self, index, proc, reason, detail):
         with self._lock:
@@ -101,9 +177,14 @@ class Monitor:
                 return
             self._killed.add(index)
         try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except (ProcessLookupError, PermissionError, OSError):
-            proc.kill()
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            proc.wait(timeout=5)
+        except (ProcessLookupError, PermissionError, OSError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.kill()
         self._add_event(index, reason, detail)
 
     def _add_event(self, index, reason, detail):

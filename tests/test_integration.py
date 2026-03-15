@@ -84,7 +84,7 @@ class TestIntegration:
 
         call_count = 0
 
-        def mock_run_side_effect():
+        def mock_run_side_effect(**kwargs):
             nonlocal call_count
             call_count += 1
             return [

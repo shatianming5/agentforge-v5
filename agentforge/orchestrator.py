@@ -5,10 +5,11 @@ import shlex
 import subprocess
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from agentforge.agent import AgentSession
+from agentforge.agent import AgentSession, CodexCLI, OutputParser
 from agentforge.anti_oscillation import AntiOscillation
 from agentforge.cleanup import Cleanup
 from agentforge.config import ChallengeConfig, load_config
@@ -18,7 +19,7 @@ from agentforge.repair import SelfRepair
 from agentforge.runner import ParallelRunner
 from agentforge.sandbox import Sandbox
 from agentforge.state import (
-    BestResult, Budget, RoundResult, SessionState,
+    BestResult, Budget, Credentials, RoundResult, SessionState,
     StateFile, StrategyRecord, StrategyResult,
 )
 from agentforge.strategy import StrategyValidator
@@ -51,6 +52,10 @@ class Orchestrator:
             hardware=hw, N=N, gpus_per_experiment=gpus_per,
             rounds_max=25, gpu_hours_max=200,
         )
+        # Snapshot credentials
+        state.credentials = self._snapshot_credentials()
+        # Snapshot env lockfile
+        state.env_lockfile_hash = self._compute_lockfile_hash()
         self.state_file.save(state)
         return state
 
@@ -81,7 +86,7 @@ class Orchestrator:
         sandbox.teardown()
         t1 = time.time()
 
-        # Cleanup
+        # Cleanup between phases
         Cleanup(self.workdir).between_phases()
 
         # Phase 2
@@ -95,7 +100,7 @@ class Orchestrator:
             for i, s in enumerate(strategies)
         ]
         runner = ParallelRunner(experiments, self.config, timeout=7200, workdir=self.workdir)
-        results = runner.run()
+        results = runner.run(N=state.N)
         t2 = time.time()
 
         # All-fail handling
@@ -103,6 +108,21 @@ class Orchestrator:
             diagnosis = SelfRepair.diagnose_all_fail(results)
             if diagnosis == "environmental":
                 SelfRepair.rebuild_venv(self.workdir)
+            elif diagnosis == "code_related":
+                # Launch new Agent session with error context
+                error_context = SelfRepair.collect_error_context(results)
+                try:
+                    repair_output = CodexCLI.run(
+                        prompt=error_context, cwd=self.workdir,
+                        timeout=1800, env={"CUDA_VISIBLE_DEVICES": "0"},
+                    )
+                    repair_strategies = OutputParser.parse(repair_output)
+                    if repair_strategies:
+                        strategies = repair_strategies
+                except (RuntimeError, ValueError):
+                    # Repair failed, rollback to best commit
+                    if state.best.commit:
+                        SelfRepair.rollback_to_commit(self.workdir, state.best.commit)
 
         # Select winners
         winners = self.select_winners(results)
@@ -155,6 +175,36 @@ class Orchestrator:
             return result.stdout.strip() if result.returncode == 0 else ""
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return ""
+
+    def _snapshot_credentials(self) -> Credentials:
+        """Detect git credential method at startup."""
+        method = "none"
+        try:
+            result = subprocess.run(
+                ["git", "config", "remote.origin.url"],
+                cwd=str(self.workdir), capture_output=True, text=True, timeout=5,
+            )
+            url = result.stdout.strip()
+            if url.startswith("git@") or url.startswith("ssh://"):
+                method = "ssh_key"
+            elif url.startswith("https://"):
+                method = "https_token"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        return Credentials(
+            git_method=method,
+            last_check=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def _compute_lockfile_hash(self) -> str:
+        """Hash requirements.txt or similar lockfile for env reproducibility."""
+        import hashlib
+        for name in ["requirements.txt", "Pipfile.lock", "poetry.lock"]:
+            path = self.workdir / name
+            if path.exists():
+                content = path.read_bytes()
+                return f"sha256:{hashlib.sha256(content).hexdigest()[:16]}"
+        return ""
 
     @staticmethod
     def select_winners(results: list[StrategyResult]) -> list[str]:

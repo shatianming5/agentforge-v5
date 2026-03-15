@@ -27,6 +27,8 @@ class StrategyResult:
     actual_vram_gb: float
     actual_epoch_seconds: float
     actual_batch_size: int
+    gpu_utilization: float = 0.0
+    resumed_from_checkpoint: bool = False
 
 
 @dataclass
@@ -65,6 +67,11 @@ class StrategyRecord:
 
 
 @dataclass
+class Credentials:
+    git_method: str      # "ssh_key" | "https_token" | "none"
+    last_check: str      # ISO timestamp
+
+@dataclass
 class SessionState:
     version: str
     session_id: str
@@ -81,6 +88,7 @@ class SessionState:
     budget: Budget
     hints_pending: list[str]
     env_lockfile_hash: str
+    credentials: Credentials = None
 
     @classmethod
     def create_initial(
@@ -109,6 +117,7 @@ class SessionState:
             budget=Budget(0, rounds_max, 0.0, gpu_hours_max, 0.0),
             hints_pending=[],
             env_lockfile_hash="",
+            credentials=Credentials(git_method="none", last_check=""),
         )
 
     def is_done(self, target_value: float) -> bool:
@@ -166,4 +175,5 @@ class StateFile:
             budget=Budget(**data["budget"]),
             hints_pending=data["hints_pending"],
             env_lockfile_hash=data["env_lockfile_hash"],
+            credentials=Credentials(**data["credentials"]) if data.get("credentials") else Credentials("none", ""),
         )

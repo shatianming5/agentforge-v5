@@ -1,4 +1,6 @@
 from __future__ import annotations
+import subprocess
+from pathlib import Path
 from agentforge.agent import Strategy
 
 
@@ -26,5 +28,36 @@ class StrategyValidator:
         return errors
 
     @staticmethod
-    def check_fingerprint_overlap(new_fp, tried_fps, threshold=0.7):
-        return new_fp in tried_fps
+    def compute_diff_fingerprint(repo_path: Path, branch: str, base: str = "HEAD") -> set[str]:
+        """Compute a set of changed lines (fingerprint) for a branch vs base."""
+        try:
+            result = subprocess.run(
+                ["git", "diff", base, branch, "--", "*.py"],
+                cwd=str(repo_path), capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                return set()
+            lines = set()
+            for line in result.stdout.split("\n"):
+                if line.startswith("+") and not line.startswith("+++"):
+                    lines.add(line[1:].strip())
+                elif line.startswith("-") and not line.startswith("---"):
+                    lines.add(line[1:].strip())
+            return lines
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return set()
+
+    @staticmethod
+    def check_fingerprint_overlap(new_fp: set[str], tried_fps: list[set[str]],
+                                   threshold: float = 0.7) -> bool:
+        """Check if new fingerprint overlaps > threshold with any tried fingerprint."""
+        if not new_fp:
+            return False
+        for tried in tried_fps:
+            if not tried:
+                continue
+            intersection = new_fp & tried
+            union = new_fp | tried
+            if union and len(intersection) / len(union) > threshold:
+                return True
+        return False

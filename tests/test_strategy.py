@@ -27,7 +27,11 @@ class TestStrategyValidator:
         assert any("risk" in e.lower() for e in errors)
 
     def test_fingerprint_overlap(self):
-        assert StrategyValidator.check_fingerprint_overlap("fp_abc", {"fp_abc": "sgd"}) is True
+        new_fp = {"line1", "line2", "line3"}
+        tried = [{"line1", "line2", "line3", "line4"}]  # >70% overlap
+        assert StrategyValidator.check_fingerprint_overlap(new_fp, tried) is True
 
     def test_no_overlap(self):
-        assert StrategyValidator.check_fingerprint_overlap("fp_xyz", {"fp_abc": "sgd"}) is False
+        new_fp = {"line_a", "line_b"}
+        tried = [{"line_x", "line_y"}]  # 0% overlap
+        assert StrategyValidator.check_fingerprint_overlap(new_fp, tried) is False

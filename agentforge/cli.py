@@ -79,18 +79,25 @@ def hint(message, workdir):
 @cli.command()
 @click.option("--workdir", type=click.Path(), default=None)
 def skip(workdir):
-    """Skip the current phase."""
+    """Skip the current phase (Phase 1: stop Agent; Phase 2: stop training, score partials)."""
     wd = _get_workdir(workdir)
     daemon = Daemon(config_path=Path("."), workdir=wd)
     pid = daemon.read_pid()
-    if pid:
-        try:
-            os.kill(pid, signal.SIGUSR1)
-            click.echo("Skip signal sent.")
-        except ProcessLookupError:
-            click.echo("Daemon not running.")
-    else:
+    if not pid:
         click.echo("No running daemon found.")
+        return
+    # Send SIGUSR1 to trigger phase skip in daemon
+    try:
+        os.kill(pid, signal.SIGUSR1)
+        # Also write skip flag to state for phase-aware handling
+        sf = _get_state_file(wd)
+        if sf.exists():
+            state = sf.load()
+            state.hints_pending.append("__SKIP_CURRENT_PHASE__")
+            sf.save(state)
+        click.echo("Skip signal sent. Current phase will be interrupted.")
+    except ProcessLookupError:
+        click.echo("Daemon not running.")
 
 
 @cli.command()

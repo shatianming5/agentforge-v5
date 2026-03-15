@@ -18,7 +18,8 @@ class ParallelRunner:
         self._timeout = timeout
         self._workdir = workdir
 
-    def run(self) -> list[StrategyResult]:
+    def run(self, N: int = 1) -> list[StrategyResult]:
+        self._N = N
         launched = self._launch_all()
         monitor = Monitor(
             processes=[(exp.index, proc, exp.log_path) for exp, proc, _ in launched],
@@ -74,7 +75,7 @@ class ParallelRunner:
                     actual_batch_size=exp.strategy.batch_size,
                 ))
             else:
-                score = Scorer.score(exp, self._config, proc.returncode)
+                score = Scorer.score(exp, self._config, proc.returncode, N=self._N)
                 results.append(StrategyResult(
                     id=f"exp-{exp.index}", strategy=exp.strategy.name,
                     branch=exp.strategy.branch, score=score,
