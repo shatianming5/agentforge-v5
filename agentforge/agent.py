@@ -140,11 +140,15 @@ class OutputParser:
 class CodexCLI:
     @staticmethod
     def run(prompt: str, cwd: Path, timeout: int, env: dict) -> str:
+        import os as _os
+        merged_env = {**_os.environ, **env} if env else None
         result = subprocess.run(
             ["codex", "--approval-policy", "auto-edit", "--quiet", "-p", prompt],
             cwd=str(cwd), capture_output=True, text=True,
-            timeout=timeout, env=env or None,
+            timeout=timeout, env=merged_env,
         )
+        if result.returncode != 0 and not result.stdout.strip():
+            raise RuntimeError(f"Codex CLI failed (exit {result.returncode}): {result.stderr[:500]}")
         return result.stdout
 
 

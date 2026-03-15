@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import math
+import shlex
+import subprocess
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 
 from agentforge.agent import AgentSession
 from agentforge.anti_oscillation import AntiOscillation
@@ -13,21 +16,25 @@ from agentforge.experiment import ExperimentSetup
 from agentforge.hardware import HardwareDetector
 from agentforge.repair import SelfRepair
 from agentforge.runner import ParallelRunner
+from agentforge.sandbox import Sandbox
 from agentforge.state import (
     BestResult, Budget, RoundResult, SessionState,
     StateFile, StrategyRecord, StrategyResult,
 )
+from agentforge.strategy import StrategyValidator
 
 
 class Orchestrator:
-    def __init__(self, config_path: Path, workdir: Path):
+    def __init__(self, config_path: Path, workdir: Path,
+                 stop_flag: Callable[[], bool] | None = None):
         self.config = load_config(config_path)
         self.workdir = workdir
         self.state_file = StateFile(workdir / ".agentforge" / "state.json")
+        self._stop_flag = stop_flag or (lambda: False)
 
     def run(self) -> None:
         state = self._init_or_resume()
-        while not self._done(state):
+        while not self._done(state) and not self._stop_flag():
             state = self._run_round(state)
             self.state_file.save(state)
         state.status = "completed" if state.best.score >= self.config.target_value else "paused"
@@ -56,9 +63,22 @@ class Orchestrator:
                 "WARNING: 3+ rounds without improvement. Try fundamentally different approaches."
             )
 
+        # Sandbox: protect read-only files
+        sandbox = Sandbox(self.workdir, self.config.read_only)
+        sandbox.setup()
+
         # Phase 1
         agent = AgentSession(self.config, state, self.workdir)
         strategies = agent.develop()
+
+        # Validate strategies
+        warnings = StrategyValidator.validate(strategies)
+        if warnings:
+            state.hints_pending.extend(
+                f"Strategy validation: {w}" for w in warnings
+            )
+
+        sandbox.teardown()
         t1 = time.time()
 
         # Cleanup
@@ -70,7 +90,7 @@ class Orchestrator:
                 strategy=s, index=i, repo_path=self.workdir,
                 workdir=self.workdir / ".agentforge" / "runs",
                 hw=state.hardware,
-                train_command=self.config.test_benchmark.split(),
+                train_command=shlex.split(self.config.test_benchmark),
             )
             for i, s in enumerate(strategies)
         ]
@@ -98,9 +118,10 @@ class Orchestrator:
 
         for r in results:
             if r.score > state.best.score:
+                commit = self._get_branch_commit(r.branch)
                 state.best = BestResult(
                     score=r.score, round=state.current_round,
-                    experiment=r.id, commit="", checkpoint="",
+                    experiment=r.id, commit=commit, checkpoint="",
                 )
 
         best_this_round = max((r.score for r in results), default=0.0)
@@ -124,6 +145,16 @@ class Orchestrator:
 
     def _done(self, state: SessionState) -> bool:
         return state.is_done(self.config.target_value)
+
+    def _get_branch_commit(self, branch: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", branch],
+                cwd=str(self.workdir), capture_output=True, text=True, timeout=10,
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return ""
 
     @staticmethod
     def select_winners(results: list[StrategyResult]) -> list[str]:

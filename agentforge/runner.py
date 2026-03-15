@@ -19,15 +19,22 @@ class ParallelRunner:
         self._workdir = workdir
 
     def run(self) -> list[StrategyResult]:
-        processes = self._launch_all()
+        launched = self._launch_all()
         monitor = Monitor(
-            processes=[(exp.index, proc, exp.log_path) for exp, proc in processes],
+            processes=[(exp.index, proc, exp.log_path) for exp, proc, _ in launched],
             timeout=self._timeout,
-            log_paths=[exp.log_path for exp, _ in processes],
+            log_paths=[exp.log_path for exp, _, _ in launched],
             workdir=self._workdir,
         )
         monitor.run()
-        return self._collect_results(processes, monitor)
+        try:
+            return self._collect_results(launched, monitor)
+        finally:
+            for _, _, log_file in launched:
+                try:
+                    log_file.close()
+                except OSError:
+                    pass
 
     def _launch_all(self):
         launched = []
@@ -42,13 +49,13 @@ class ParallelRunner:
                 stderr=subprocess.STDOUT,
                 preexec_fn=os.setpgrp,
             )
-            launched.append((exp, proc))
+            launched.append((exp, proc, log_file))
         return launched
 
-    def _collect_results(self, processes, monitor):
+    def _collect_results(self, launched, monitor):
         killed = {e.exp_index: e for e in monitor.events if e.reason != "disk"}
         results = []
-        for exp, proc in processes:
+        for exp, proc, _ in launched:
             if exp.index in killed:
                 evt = killed[exp.index]
                 results.append(StrategyResult(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -14,7 +15,7 @@ class Scorer:
             return 0.0
         try:
             subprocess.run(
-                config.test_benchmark.split(),
+                shlex.split(config.test_benchmark),
                 cwd=str(exp.workdir),
                 env=exp.env,
                 capture_output=True,

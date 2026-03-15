@@ -28,7 +28,8 @@ class Daemon:
         self._redirect_stdio()
         self._setup_signals()
         try:
-            orchestrator = Orchestrator(self.config_path, self.workdir)
+            orchestrator = Orchestrator(self.config_path, self.workdir,
+                                        stop_flag=lambda: self._should_stop)
             orchestrator.run()
         finally:
             self._cleanup_pid()

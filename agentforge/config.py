@@ -23,15 +23,18 @@ def load_config(path: Path) -> ChallengeConfig:
         raise FileNotFoundError(f"Config not found: {path}")
     with open(path) as f:
         raw = yaml.safe_load(f)
-    return ChallengeConfig(
-        challenge_name=raw["challenge"]["name"],
-        challenge_description=raw["challenge"]["description"],
-        target_metric=raw["target"]["metric"],
-        target_value=float(raw["target"]["value"]),
-        target_direction=raw["target"]["direction"],
-        test_smoke=raw["tests"]["smoke"],
-        test_full=raw["tests"]["full"],
-        test_benchmark=raw["tests"]["benchmark"],
-        writable=list(raw["constraints"]["writable"]),
-        read_only=list(raw["constraints"]["read_only"]),
-    )
+    try:
+        return ChallengeConfig(
+            challenge_name=raw["challenge"]["name"],
+            challenge_description=raw["challenge"]["description"],
+            target_metric=raw["target"]["metric"],
+            target_value=float(raw["target"]["value"]),
+            target_direction=raw["target"]["direction"],
+            test_smoke=raw["tests"]["smoke"],
+            test_full=raw["tests"]["full"],
+            test_benchmark=raw["tests"]["benchmark"],
+            writable=list(raw["constraints"]["writable"]),
+            read_only=list(raw["constraints"]["read_only"]),
+        )
+    except KeyError as e:
+        raise ValueError(f"Missing required config field: {e}") from e
