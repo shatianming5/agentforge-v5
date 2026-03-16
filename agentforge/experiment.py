@@ -87,17 +87,37 @@ class ExperimentSetup:
         return ["taskset", "-c", f"{start}-{end}"]
 
     @staticmethod
+    def _find_strategy_config(clone_dir: Path) -> str | None:
+        """Find the strategy-specific config in configs/agentforge/."""
+        ag_configs = clone_dir / "configs" / "agentforge"
+        if ag_configs.is_dir():
+            py_files = sorted(ag_configs.glob("*.py"))
+            if py_files:
+                return str(py_files[0].relative_to(clone_dir))
+        return None
+
+    @staticmethod
     def create(strategy, index, repo_path, workdir, hw, train_command,
                default_benchmark: str = "") -> Experiment:
         clone_dir = ExperimentSetup.create_clone(repo_path, strategy.branch, workdir)
         log_dir = workdir / "logs"
         log_dir.mkdir(exist_ok=True)
         env = ExperimentSetup.build_env(index, hw, strategy)
-        # Use strategy's train_command if provided, else fall back to default
+        # Use strategy's train_command if provided
         if strategy.train_command:
             cmd = shlex.split(strategy.train_command)
         else:
-            cmd = train_command
+            # Auto-discover config from configs/agentforge/ in clone
+            config_path = ExperimentSetup._find_strategy_config(clone_dir)
+            if config_path:
+                work_dir_name = f"work_dirs/{strategy.branch.replace('/', '_')}"
+                cmd = [
+                    "conda", "run", "-n", "iraod", "--no-capture-output",
+                    "python", "train.py", config_path,
+                    "--work-dir", work_dir_name,
+                ]
+            else:
+                cmd = train_command
         # Add CPU affinity prefix if applicable
         affinity = ExperimentSetup.set_cpu_affinity(index, hw)
         if affinity:
