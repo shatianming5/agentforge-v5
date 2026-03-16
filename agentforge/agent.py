@@ -13,6 +13,17 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class StrategySpec:
+    """Phase 1 精简输出：只有策略规格，不含分支/运行时数据。"""
+    name: str
+    description: str
+    approach: str
+    category: str
+    risk: str
+    estimated_train_command: str = ""
+
+
+@dataclass
 class Strategy:
     name: str
     branch: str
@@ -135,6 +146,59 @@ class PromptBuilder:
         return "\n".join(lines)
 
     @staticmethod
+    def build_spec_only(config: ChallengeConfig, state: SessionState) -> str:
+        sections = [
+            PromptBuilder._system_spec_section(config, state),
+            PromptBuilder._hardware_section(state),
+            PromptBuilder._state_section(state),
+            PromptBuilder._last_round_section(state),
+            PromptBuilder._compressed_history_section(state),
+            PromptBuilder._taboo_section(state),
+            PromptBuilder._hints_section(state),
+            PromptBuilder._rules_spec_section(config, state),
+        ]
+        return "\n\n".join(s for s in sections if s)
+
+    @staticmethod
+    def _system_spec_section(config, state):
+        return (
+            f"SYSTEM: You are the Strategist agent in an AgentForge optimization session.\n"
+            f"Your job: propose {state.N} different optimization strategies.\n"
+            f"You do NOT need to write code or create branches.\n"
+            f"Just describe each strategy clearly so another agent can implement it.\n\n"
+            f"CHALLENGE:\n"
+            f"  Name: {config.challenge_name}\n"
+            f"  Description: {config.challenge_description}\n"
+            f"  Target: {config.target_metric} {config.target_direction} {config.target_value}"
+        )
+
+    @staticmethod
+    def _rules_spec_section(config, state):
+        ro = ", ".join(config.read_only)
+        return (
+            f"RULES:\n"
+            f"  - Do NOT modify read-only files: {ro}\n"
+            f"  - Produce at least {min(state.N, 3)} different categories of strategies\n"
+            f"  - At least {min(state.N, 2)} must be high-risk/high-reward\n"
+            f"  - Do NOT write any code or create branches\n"
+            f"  - Just describe each strategy\n\n"
+            f"OUTPUT (CRITICAL — you MUST do this as your FINAL step):\n"
+            f"  mkdir -p .agentforge\n"
+            f"  Write a JSON array to the file: .agentforge/agent_output.json\n"
+            f"  Each element must have these fields:\n"
+            f'  {{\n'
+            f'    "name": "descriptive_name",\n'
+            f'    "description": "what this strategy does",\n'
+            f'    "approach": "detailed implementation steps for another agent",\n'
+            f'    "category": "optim",\n'
+            f'    "risk": "high",\n'
+            f'    "estimated_train_command": "python3 train.py"\n'
+            f'  }}\n'
+            f"  category must be one of: optim, arch, data, reg\n"
+            f"  risk must be: high or low"
+        )
+
+    @staticmethod
     def _rules_section(config, state):
         ro = ", ".join(config.read_only)
         rnd = state.current_round + 1
@@ -205,6 +269,35 @@ class OutputParser:
             raise ValueError("No valid strategies found in Agent output")
         return strategies
 
+    @staticmethod
+    def parse_specs(raw: str) -> list[StrategySpec]:
+        begin = raw.find(OutputParser.BEGIN_MARKER)
+        end = raw.find(OutputParser.END_MARKER)
+        if begin == -1 or end == -1:
+            raise ValueError("No summary found in Agent output")
+        json_str = raw[begin + len(OutputParser.BEGIN_MARKER):end].strip()
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in Agent summary: {e}") from e
+        if not isinstance(data, list) or not data:
+            raise ValueError("Agent summary must be a non-empty JSON array")
+        specs = []
+        for d in data:
+            if "name" not in d:
+                continue
+            specs.append(StrategySpec(
+                name=d["name"],
+                description=d.get("description", ""),
+                approach=d.get("approach", ""),
+                category=d.get("category", "unknown"),
+                risk=d.get("risk", "medium"),
+                estimated_train_command=d.get("estimated_train_command", ""),
+            ))
+        if not specs:
+            raise ValueError("No valid strategy specs found in Agent output")
+        return specs
+
 
 class CodexCLI:
     @staticmethod
@@ -256,11 +349,11 @@ class CodexCLI:
                     return f"AGENTFORGE_SUMMARY_BEGIN\n{content}\nAGENTFORGE_SUMMARY_END"
             except (json.JSONDecodeError, OSError):
                 pass
+        from agentforge.stream import stream_run
         try:
-            result = subprocess.run(
+            result = stream_run(
                 ["codex", "exec", "--full-auto", prompt],
-                cwd=str(cwd), capture_output=True, text=True,
-                timeout=timeout, env=merged_env,
+                cwd=cwd, env=merged_env, timeout=timeout, prefix="Codex",
             )
         except subprocess.TimeoutExpired:
             content = CodexCLI._find_summary_json(agentforge_dir)
@@ -277,7 +370,7 @@ class CodexCLI:
             return stdout
         if result.returncode != 0:
             raise RuntimeError(
-                f"Codex CLI failed (exit {result.returncode}): {(result.stderr or '')[:500]}")
+                f"Codex CLI failed (exit {result.returncode}): {stdout[-500:]}")
         raise RuntimeError("Codex produced no strategy output")
 
 
