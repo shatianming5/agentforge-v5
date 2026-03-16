@@ -7,7 +7,7 @@ from agentforge.orchestrator import Orchestrator
 
 
 class Daemon:
-    def __init__(self, config_path: Path, workdir: Path):
+    def __init__(self, config_path: Path | None, workdir: Path):
         self.config_path = config_path
         self.workdir = workdir
         self.pid_path = workdir / ".agentforge" / "daemon.pid"

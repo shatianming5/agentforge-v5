@@ -125,3 +125,14 @@ class TestCLI:
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
         assert "AgentForge" in result.output
+
+
+def test_run_without_config_path(tmp_path):
+    """不传 config_path 也能启动（触发 auto-setup）。"""
+    from click.testing import CliRunner
+    from agentforge.cli import cli
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["run", "--workdir", str(tmp_path)])
+    # 不应该报 "Missing argument" 错误
+    assert "Missing argument" not in (result.output or "")

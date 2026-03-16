@@ -22,12 +22,13 @@ def _get_state_file(workdir):
 
 
 @cli.command()
-@click.argument("config_path", type=click.Path(exists=True))
+@click.argument("config_path", type=click.Path(exists=True), required=False, default=None)
 @click.option("--workdir", type=click.Path(), default=None)
 def run(config_path, workdir):
-    """Start the optimization daemon."""
+    """Start the optimization daemon. If config_path is omitted, auto-setup runs first."""
     wd = _get_workdir(workdir)
-    daemon = Daemon(config_path=Path(config_path), workdir=wd)
+    config = Path(config_path) if config_path else None
+    daemon = Daemon(config_path=config, workdir=wd)
     daemon.start()
 
 
