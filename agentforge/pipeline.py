@@ -218,3 +218,64 @@ class PipelineWorker:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 proc.kill()
+
+
+class PipelineOrchestrator:
+    """管理 N 个 PipelineWorker 线程，收集结果。"""
+
+    def __init__(
+        self,
+        specs: list[StrategySpec],
+        config: ChallengeConfig,
+        hw: HardwareInfo,
+        round_num: int,
+        workdir: Path,
+        timeout: int = 345600,
+        config_context: str = "",
+    ):
+        self.specs = specs
+        self.config = config
+        self.hw = hw
+        self.round_num = round_num
+        self.workdir = workdir
+        self.timeout = timeout
+        self.config_context = config_context
+        self._event_bus = EventBus()
+        self._workers: list[PipelineWorker] = []
+
+    def on_event(self, callback: Callable[[PipelineEvent], None]) -> None:
+        self._event_bus.subscribe(callback)
+
+    def run(self) -> list[StrategyResult]:
+        # Start event consumer thread
+        consumer = threading.Thread(
+            target=self._event_bus.run_consumer, daemon=True,
+        )
+        consumer.start()
+
+        # Create and start worker threads
+        threads: list[threading.Thread] = []
+        for i, spec in enumerate(self.specs):
+            worker = PipelineWorker(
+                index=i, spec=spec, config=self.config,
+                hw=self.hw, round_num=self.round_num,
+                workdir=self.workdir, event_bus=self._event_bus,
+                timeout=self.timeout, config_context=self.config_context,
+            )
+            self._workers.append(worker)
+            t = threading.Thread(target=worker.run, name=f"worker-{i}", daemon=True)
+            threads.append(t)
+
+        for t in threads:
+            t.start()
+
+        # Wait for all workers to complete (barrier)
+        for t in threads:
+            t.join()
+
+        # Shutdown event bus
+        self._event_bus.shutdown()
+        consumer.join(timeout=5)
+
+        # Collect results
+        return [w.result for w in self._workers if w.result is not None]
