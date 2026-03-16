@@ -37,6 +37,7 @@ class Scorer:
                 shlex.split(config.test_full),
                 cwd=exp.workdir, env=exp.env,
                 timeout=3600, prefix=f"Test exp-{exp.index}", check=True,
+                quiet=True,
             )
             return True
         except subprocess.CalledProcessError as e:
@@ -69,6 +70,7 @@ class Scorer:
                 shlex.split(config.test_benchmark),
                 cwd=workdir, env=env,
                 timeout=3600, prefix="Benchmark", check=True,
+                quiet=True,
             )
         except subprocess.CalledProcessError as e:
             print(f"[Scorer] benchmark failed: {(e.output or '')[:300]}")

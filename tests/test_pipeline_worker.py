@@ -56,7 +56,9 @@ def test_worker_emits_events():
         event_bus=bus, timeout=60, config_context="test",
     )
 
-    with patch.object(worker, "_implement", return_value=mock_strategy), \
+    with patch.object(worker, "_create_impl_worktree", return_value=Path("/tmp/test/impl")), \
+         patch.object(worker, "_remove_impl_worktree"), \
+         patch.object(worker, "_implement", return_value=mock_strategy), \
          patch.object(worker, "_train", return_value=0), \
          patch.object(worker, "_score", return_value=0.85):
         worker.run()
@@ -89,7 +91,9 @@ def test_worker_handles_implement_failure():
         event_bus=bus, timeout=60, config_context="test",
     )
 
-    with patch.object(worker, "_implement", side_effect=RuntimeError("Codex failed")):
+    with patch.object(worker, "_create_impl_worktree", return_value=Path("/tmp/test/impl")), \
+         patch.object(worker, "_remove_impl_worktree"), \
+         patch.object(worker, "_implement", side_effect=RuntimeError("Codex failed")):
         worker.run()
 
     bus.shutdown()
@@ -118,7 +122,9 @@ def test_worker_result_property():
         event_bus=bus, timeout=60, config_context="test",
     )
 
-    with patch.object(worker, "_implement", return_value=mock_strategy), \
+    with patch.object(worker, "_create_impl_worktree", return_value=Path("/tmp/test/impl")), \
+         patch.object(worker, "_remove_impl_worktree"), \
+         patch.object(worker, "_implement", return_value=mock_strategy), \
          patch.object(worker, "_train", return_value=0), \
          patch.object(worker, "_score", return_value=0.85):
         worker.run()

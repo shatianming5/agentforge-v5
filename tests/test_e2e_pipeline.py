@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 
 from agentforge.agent import StrategySpec, Strategy
 from agentforge.experiment import Experiment
-from agentforge.pipeline import PipelineOrchestrator, PipelineEvent
+from agentforge.pipeline import PipelineOrchestrator, PipelineEvent, PipelineWorker
 from agentforge.state import HardwareInfo, StrategyResult
 
 
@@ -43,6 +43,14 @@ def _make_experiment(index, tmp_path):
     )
 
 
+def _worktree_patches(tmp_path):
+    """Return context managers that mock worktree creation/cleanup."""
+    return (
+        patch.object(PipelineWorker, "_create_impl_worktree", return_value=tmp_path),
+        patch.object(PipelineWorker, "_remove_impl_worktree"),
+    )
+
+
 def test_e2e_pipeline_all_succeed(tmp_path):
     """All workers succeed: 3 specs -> 3 results with scores."""
     specs = [
@@ -74,7 +82,9 @@ def test_e2e_pipeline_all_succeed(tmp_path):
     def mock_score(exp, config, returncode, N=1):
         return 0.85 + exp.index * 0.01
 
-    with patch("agentforge.pipeline.CodexCLI.implement_strategy", side_effect=mock_implement), \
+    wt1, wt2 = _worktree_patches(tmp_path)
+    with wt1, wt2, \
+         patch("agentforge.pipeline.CodexCLI.implement_strategy", side_effect=mock_implement), \
          patch("agentforge.pipeline.ExperimentSetup.create", side_effect=mock_create), \
          patch("agentforge.pipeline.Scorer.score", side_effect=mock_score):
         orch = PipelineOrchestrator(
@@ -125,7 +135,9 @@ def test_e2e_pipeline_one_fails(tmp_path):
                     default_benchmark=""):
         return _make_experiment(index, tmp_path)
 
-    with patch("agentforge.pipeline.CodexCLI.implement_strategy", side_effect=mock_implement), \
+    wt1, wt2 = _worktree_patches(tmp_path)
+    with wt1, wt2, \
+         patch("agentforge.pipeline.CodexCLI.implement_strategy", side_effect=mock_implement), \
          patch("agentforge.pipeline.ExperimentSetup.create", side_effect=mock_create), \
          patch("agentforge.pipeline.Scorer.score", return_value=0.9):
         orch = PipelineOrchestrator(
@@ -172,7 +184,9 @@ def test_e2e_pipeline_event_ordering(tmp_path):
     def mock_score(exp, config, returncode, N=1):
         return 0.95
 
-    with patch("agentforge.pipeline.CodexCLI.implement_strategy", side_effect=mock_implement), \
+    wt1, wt2 = _worktree_patches(tmp_path)
+    with wt1, wt2, \
+         patch("agentforge.pipeline.CodexCLI.implement_strategy", side_effect=mock_implement), \
          patch("agentforge.pipeline.ExperimentSetup.create", side_effect=mock_create), \
          patch("agentforge.pipeline.Scorer.score", side_effect=mock_score):
         orch = PipelineOrchestrator(
@@ -226,7 +240,9 @@ def test_e2e_pipeline_all_fail(tmp_path):
     def mock_implement(spec, index, round_num, cwd, config_context, timeout):
         raise RuntimeError(f"Codex failed for {spec.name}")
 
-    with patch("agentforge.pipeline.CodexCLI.implement_strategy", side_effect=mock_implement):
+    wt1, wt2 = _worktree_patches(tmp_path)
+    with wt1, wt2, \
+         patch("agentforge.pipeline.CodexCLI.implement_strategy", side_effect=mock_implement):
         orch = PipelineOrchestrator(
             specs=specs, config=config, hw=hw,
             round_num=1, workdir=tmp_path,
@@ -280,7 +296,9 @@ def test_e2e_pipeline_result_fields(tmp_path):
     def mock_score(exp, config, returncode, N=1):
         return 0.92
 
-    with patch("agentforge.pipeline.CodexCLI.implement_strategy", side_effect=mock_implement), \
+    wt1, wt2 = _worktree_patches(tmp_path)
+    with wt1, wt2, \
+         patch("agentforge.pipeline.CodexCLI.implement_strategy", side_effect=mock_implement), \
          patch("agentforge.pipeline.ExperimentSetup.create", side_effect=mock_create), \
          patch("agentforge.pipeline.Scorer.score", side_effect=mock_score):
         orch = PipelineOrchestrator(

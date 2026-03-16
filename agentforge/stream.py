@@ -16,10 +16,12 @@ def stream_run(
     prefix: str = "",
     check: bool = False,
     shell: bool = False,
+    quiet: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """subprocess.run 的流式替代：实时逐行打印 stdout+stderr。
 
     返回与 subprocess.CompletedProcess 兼容的对象（stdout 为完整输出）。
+    quiet=True 时仍然捕获 stdout 但不打印到终端。
     """
     proc = subprocess.Popen(
         cmd,
@@ -37,8 +39,9 @@ def stream_run(
     try:
         for line in proc.stdout:
             stdout_lines.append(line)
-            sys.stdout.write(f"{tag}{line}")
-            sys.stdout.flush()
+            if not quiet:
+                sys.stdout.write(f"{tag}{line}")
+                sys.stdout.flush()
             if time.monotonic() > deadline:
                 proc.kill()
                 proc.wait()

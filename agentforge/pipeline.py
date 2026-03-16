@@ -107,11 +107,15 @@ class PipelineWorker:
 
     def run(self) -> None:
         try:
-            # Phase: Implementing
+            # Phase: Implementing (in per-worker worktree for parallel isolation)
             self._emit("implementing")
-            strategy = self._implement()
+            impl_dir = self._create_impl_worktree()
+            try:
+                strategy = self._implement(impl_dir)
+            finally:
+                self._remove_impl_worktree(impl_dir)
 
-            # Phase: Training
+            # Phase: Training (uses main workdir as repo_path for worktree creation)
             self._emit("training")
             returncode = self._train(strategy)
 
@@ -147,12 +151,39 @@ class PipelineWorker:
             )
             self._emit("failed", error=str(e))
 
-    def _implement(self) -> Strategy:
+    def _create_impl_worktree(self) -> Path:
+        """Create an isolated git worktree for Codex implement phase."""
+        impl_dir = self.workdir / ".agentforge" / "impl" / f"worker-{self.index}"
+        impl_dir.parent.mkdir(parents=True, exist_ok=True)
+        # Remove stale worktree if exists
+        if impl_dir.exists():
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(impl_dir)],
+                cwd=str(self.workdir), capture_output=True, timeout=30,
+            )
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(impl_dir)],
+            cwd=str(self.workdir),
+            check=True, capture_output=True, timeout=30,
+        )
+        return impl_dir
+
+    def _remove_impl_worktree(self, impl_dir: Path) -> None:
+        """Clean up the implement worktree (branch/commits persist in main repo)."""
+        try:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(impl_dir)],
+                cwd=str(self.workdir), capture_output=True, timeout=30,
+            )
+        except Exception:
+            pass
+
+    def _implement(self, cwd: Path) -> Strategy:
         return CodexCLI.implement_strategy(
             spec=self.spec,
             index=self.index,
             round_num=self.round_num,
-            cwd=self.workdir,
+            cwd=cwd,
             config_context=self.config_context,
             timeout=self.timeout // 2,
         )
