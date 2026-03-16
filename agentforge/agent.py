@@ -373,6 +373,65 @@ class CodexCLI:
                 f"Codex CLI failed (exit {result.returncode}): {stdout[-500:]}")
         raise RuntimeError("Codex produced no strategy output")
 
+    @staticmethod
+    def _build_implement_prompt(
+        spec: StrategySpec, index: int, round_num: int,
+        config_context: str,
+    ) -> str:
+        branch = f"agentforge/iter-{round_num}/exp-{index}"
+        return (
+            f"SYSTEM: You are the Implementer agent in an AgentForge optimization session.\n"
+            f"You have shell access and 1 GPU (CUDA_VISIBLE_DEVICES=0).\n"
+            f"Your job: implement exactly ONE strategy and verify it works.\n\n"
+            f"CHALLENGE CONTEXT:\n{config_context}\n\n"
+            f"STRATEGY TO IMPLEMENT:\n"
+            f"  Name: {spec.name}\n"
+            f"  Description: {spec.description}\n"
+            f"  Approach: {spec.approach}\n"
+            f"  Category: {spec.category}\n"
+            f"  Risk: {spec.risk}\n"
+            f"  Suggested train command: {spec.estimated_train_command}\n\n"
+            f"INSTRUCTIONS:\n"
+            f"  1. Create branch: {branch}\n"
+            f"  2. Write the code changes on that branch\n"
+            f"  3. Run a VERY SHORT trial (max_iters=50) to verify it works\n"
+            f"  4. Measure: VRAM usage, loss trend, time per epoch\n"
+            f"  5. Commit the working version\n"
+            f"  6. Return to main branch when done\n\n"
+            f"OUTPUT (CRITICAL — you MUST do this as your FINAL step):\n"
+            f"  mkdir -p .agentforge\n"
+            f"  Write a JSON array to .agentforge/agent_output.json with ONE element:\n"
+            f'  [{{\n'
+            f'    "name": "{spec.name}",\n'
+            f'    "branch": "{branch}",\n'
+            f'    "confidence": 0.8,\n'
+            f'    "measured_vram_gb": <measured>,\n'
+            f'    "measured_epoch_seconds": <measured>,\n'
+            f'    "batch_size": <used>,\n'
+            f'    "resume_checkpoint": false,\n'
+            f'    "category": "{spec.category}",\n'
+            f'    "risk": "{spec.risk}",\n'
+            f'    "train_command": "<actual command used>"\n'
+            f'  }}]'
+        )
+
+    @staticmethod
+    def implement_strategy(
+        spec: StrategySpec, index: int, round_num: int,
+        cwd: Path, config_context: str, timeout: int = 43200,
+    ) -> Strategy:
+        prompt = CodexCLI._build_implement_prompt(
+            spec, index, round_num, config_context,
+        )
+        raw_output = CodexCLI.run(
+            prompt=prompt, cwd=cwd, timeout=timeout,
+            env={"CUDA_VISIBLE_DEVICES": "0"},
+        )
+        strategies = OutputParser.parse(raw_output)
+        if not strategies:
+            raise RuntimeError(f"Codex produced no strategy for {spec.name}")
+        return strategies[0]
+
 
 class BranchDetector:
     """Fallback: detect strategies from git branches if Codex output parsing fails."""
