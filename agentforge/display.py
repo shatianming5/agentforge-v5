@@ -183,3 +183,93 @@ class Display:
             self._console.print(msg)
         else:
             print(msg)
+
+
+from agentforge.pipeline import PipelineEvent
+
+
+class LiveProgressDisplay:
+    """订阅 EventBus，实时展示各 Worker 的进度。"""
+
+    def __init__(self, num_workers: int, use_rich: bool | None = None):
+        if use_rich is None:
+            self._use_rich = _HAS_RICH and _is_tty()
+        else:
+            self._use_rich = use_rich and _HAS_RICH
+        self._num_workers = num_workers
+        self._states: list[dict] = [
+            {"phase": "pending", "strategy": "", "progress": "", "score": None}
+            for _ in range(num_workers)
+        ]
+        self._live = None
+
+    def handle_event(self, event: PipelineEvent) -> None:
+        idx = event.worker_index
+        if 0 <= idx < self._num_workers:
+            self._states[idx]["phase"] = event.phase
+            if event.strategy_name:
+                self._states[idx]["strategy"] = event.strategy_name
+            if event.score is not None:
+                self._states[idx]["score"] = event.score
+            if event.log_tail:
+                self._states[idx]["progress"] = event.log_tail.split("\n")[-1][:40]
+            elif event.progress:
+                self._states[idx]["progress"] = str(event.progress)
+
+        if self._use_rich:
+            self._refresh_rich()
+        else:
+            self._print_plain()
+
+    def start(self) -> None:
+        if self._use_rich:
+            from rich.live import Live
+            self._live = Live(self._build_rich_table(), refresh_per_second=2)
+            self._live.start()
+
+    def stop(self) -> None:
+        if self._live:
+            self._live.stop()
+            self._live = None
+
+    def render_plain(self) -> str:
+        lines = []
+        lines.append(f"  {'#':<4} {'Strategy':<24} {'Phase':<16} {'Progress':<20} {'Score':>8}")
+        lines.append(f"  {'─'*4} {'─'*24} {'─'*16} {'─'*20} {'─'*8}")
+        for i, s in enumerate(self._states):
+            score_str = f"{s['score']:.4f}" if s['score'] is not None else "—"
+            progress = s.get("progress", "")[:20]
+            lines.append(
+                f"  {i:<4} {s['strategy']:<24} {s['phase']:<16} {progress:<20} {score_str:>8}"
+            )
+        return "\n".join(lines)
+
+    def _print_plain(self) -> None:
+        import sys
+        sys.stdout.write("\033[2J\033[H")  # clear screen
+        sys.stdout.write(self.render_plain() + "\n")
+        sys.stdout.flush()
+
+    def _build_rich_table(self):
+        if not _HAS_RICH:
+            return ""
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Strategy", min_width=20)
+        table.add_column("Phase", width=16)
+        table.add_column("Progress", width=20)
+        table.add_column("Score", justify="right", width=10)
+        for i, s in enumerate(self._states):
+            phase_str = s["phase"]
+            score_str = f"{s['score']:.4f}" if s['score'] is not None else "—"
+            progress = s.get("progress", "")[:20]
+            if s["phase"] == "done":
+                phase_str = "[green]done[/green]"
+            elif s["phase"] == "failed":
+                phase_str = "[red]failed[/red]"
+            table.add_row(str(i), s["strategy"], phase_str, progress, score_str)
+        return table
+
+    def _refresh_rich(self) -> None:
+        if self._live:
+            self._live.update(self._build_rich_table())
