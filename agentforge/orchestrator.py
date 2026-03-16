@@ -197,7 +197,7 @@ class Orchestrator:
         state.rounds.append(round_result)
 
         for r in results:
-            if is_better(r.score, state.best.score, d):
+            if r.status == "ok" and r.score > 0 and is_better(r.score, state.best.score, d):
                 commit = self._get_branch_commit(r.branch)
                 state.best = BestResult(
                     score=r.score, round=state.current_round,
