@@ -301,13 +301,18 @@ class OutputParser:
 
 class CodexCLI:
     @staticmethod
-    def _find_summary_json(agentforge_dir: Path) -> str | None:
-        """Search .agentforge/ for any JSON file containing strategy data."""
+    def _find_summary_json(agentforge_dir: Path, output_name: str = "agent_output.json") -> str | None:
+        """Search .agentforge/ for any JSON file containing strategy data.
+
+        After successfully reading, the file is deleted to prevent stale data
+        from being consumed by subsequent calls (e.g. Phase 2 workers picking
+        up Phase 1's spec-only output).
+        """
         if not agentforge_dir.is_dir():
             return None
         # Try exact name first, then any JSON
         candidates = []
-        exact = agentforge_dir / "agent_output.json"
+        exact = agentforge_dir / output_name
         if exact.exists():
             candidates.insert(0, exact)
         for f in sorted(agentforge_dir.glob("*.json"), key=os.path.getmtime, reverse=True):
@@ -321,20 +326,24 @@ class CodexCLI:
                 data = json.loads(content)
                 # Accept: direct array, or object with "strategies" key
                 if isinstance(data, list):
+                    f.unlink(missing_ok=True)
                     return content
                 if isinstance(data, dict) and "strategies" in data:
-                    return json.dumps(data["strategies"])
+                    result = json.dumps(data["strategies"])
+                    f.unlink(missing_ok=True)
+                    return result
                 return None
             except (json.JSONDecodeError, OSError):
                 continue
         return None
 
     @staticmethod
-    def run(prompt: str, cwd: Path, timeout: int, env: dict) -> str:
+    def run(prompt: str, cwd: Path, timeout: int, env: dict,
+            output_name: str = "agent_output.json") -> str:
         merged_env = {**os.environ, **(env or {})}
         agentforge_dir = Path(cwd) / ".agentforge"
-        # Use pre-seeded agent_output.json if present (skip Codex)
-        agent_output_path = agentforge_dir / "agent_output.json"
+        # Use pre-seeded output file if present (skip Codex)
+        agent_output_path = agentforge_dir / output_name
         if agent_output_path.exists():
             try:
                 raw = agent_output_path.read_text().strip()
@@ -356,12 +365,12 @@ class CodexCLI:
                 cwd=cwd, env=merged_env, timeout=timeout, prefix="Codex",
             )
         except subprocess.TimeoutExpired:
-            content = CodexCLI._find_summary_json(agentforge_dir)
+            content = CodexCLI._find_summary_json(agentforge_dir, output_name)
             if content:
                 return f"AGENTFORGE_SUMMARY_BEGIN\n{content}\nAGENTFORGE_SUMMARY_END"
             raise
         # Primary: read structured output from any JSON in .agentforge/
-        content = CodexCLI._find_summary_json(agentforge_dir)
+        content = CodexCLI._find_summary_json(agentforge_dir, output_name)
         if content:
             return f"AGENTFORGE_SUMMARY_BEGIN\n{content}\nAGENTFORGE_SUMMARY_END"
         # Fallback: look for markers in stdout
@@ -400,7 +409,7 @@ class CodexCLI:
             f"  6. Return to main branch when done\n\n"
             f"OUTPUT (CRITICAL — you MUST do this as your FINAL step):\n"
             f"  mkdir -p .agentforge\n"
-            f"  Write a JSON array to .agentforge/agent_output.json with ONE element:\n"
+            f"  Write a JSON array to .agentforge/agent_output_exp{index}.json with ONE element:\n"
             f'  [{{\n'
             f'    "name": "{spec.name}",\n'
             f'    "branch": "{branch}",\n'
@@ -423,9 +432,12 @@ class CodexCLI:
         prompt = CodexCLI._build_implement_prompt(
             spec, index, round_num, config_context,
         )
+        # Use per-worker output file to avoid parallel conflicts
+        output_name = f"agent_output_exp{index}.json"
         raw_output = CodexCLI.run(
             prompt=prompt, cwd=cwd, timeout=timeout,
             env={"CUDA_VISIBLE_DEVICES": "0"},
+            output_name=output_name,
         )
         strategies = OutputParser.parse(raw_output)
         if not strategies:
