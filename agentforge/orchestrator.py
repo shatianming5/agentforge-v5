@@ -127,15 +127,31 @@ class Orchestrator:
         Cleanup(self.workdir).between_phases()
 
         # Phase 2
-        experiments = [
-            ExperimentSetup.create(
-                strategy=s, index=i, repo_path=self.workdir,
-                workdir=self.workdir / ".agentforge" / "runs",
-                hw=state.hardware,
-                train_command=shlex.split(self.config.test_benchmark),
+        experiments = []
+        for i, s in enumerate(strategies):
+            try:
+                exp = ExperimentSetup.create(
+                    strategy=s, index=i, repo_path=self.workdir,
+                    workdir=self.workdir / ".agentforge" / "runs",
+                    hw=state.hardware,
+                    train_command=shlex.split(self.config.test_benchmark),
+                )
+                experiments.append(exp)
+            except subprocess.CalledProcessError as e:
+                print(f"[AgentForge] 跳过策略 {s.name}: 分支 {s.branch} 不可用")
+        if not experiments:
+            print("[AgentForge] 所有策略分支均不可用，跳过本轮")
+            t2 = time.time()
+            round_result = RoundResult(
+                round=state.current_round, experiments=[],
+                winners=[], phase1_minutes=(t1 - t0) / 60,
+                phase2_minutes=(t2 - t1) / 60,
             )
-            for i, s in enumerate(strategies)
-        ]
+            state.rounds.append(round_result)
+            state.budget.rounds_used += 1
+            state.current_round += 1
+            self.state_file.save(state)
+            return state
         runner = ParallelRunner(experiments, self.config, timeout=345600, workdir=self.workdir)
         results = runner.run(N=state.N)
         t2 = time.time()
