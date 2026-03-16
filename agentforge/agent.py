@@ -48,7 +48,8 @@ class PromptBuilder:
             f"Your job: develop {state.N} different optimization strategies.\n"
             f"For each strategy, you MUST:\n"
             f"  1. Write the code changes\n"
-            f"  2. Run a trial (2 epochs) to verify it works\n"
+            f"  2. Run a VERY SHORT trial (max_iters=50, eval_interval=25) to verify it works\n"
+            f"     IMPORTANT: Keep trials SHORT (<30 seconds). Do NOT run full training.\n"
             f"  3. Measure: VRAM usage, loss trend, time per epoch\n"
             f"  4. If it fails, fix it and re-try\n"
             f"  5. Commit the working version to a Git branch\n\n"
@@ -135,13 +136,34 @@ class PromptBuilder:
     @staticmethod
     def _rules_section(config, state):
         ro = ", ".join(config.read_only)
+        rnd = state.current_round + 1
         return (
             f"RULES:\n"
             f"  - Do NOT modify read-only files: {ro}\n"
-            f"  - Produce at least 3 different categories of strategies\n"
-            f"  - At least 2 must be high-risk/high-reward\n"
-            f"  - Each strategy gets its own Git branch: agentforge/iter-{{round}}/exp-{{i}}\n"
-            f"  - After developing all strategies, output a summary JSON to stdout"
+            f"  - Produce at least {min(state.N, 3)} different categories of strategies\n"
+            f"  - At least {min(state.N, 2)} must be high-risk/high-reward\n"
+            f"  - Each strategy gets its own Git branch: agentforge/iter-{rnd}/exp-{{i}}\n"
+            f"  - For each strategy: create the branch, commit code, run a quick trial to verify\n"
+            f"  - Return to the main branch when done\n\n"
+            f"OUTPUT (CRITICAL — you MUST do this as your FINAL step):\n"
+            f"  mkdir -p .agentforge\n"
+            f"  Write a JSON array to the file: .agentforge/agent_output.json\n"
+            f"  Each element must have these fields:\n"
+            f'  {{\n'
+            f'    "name": "descriptive_name",\n'
+            f'    "branch": "agentforge/iter-{rnd}/exp-0",\n'
+            f'    "confidence": 0.8,\n'
+            f'    "measured_vram_gb": 0,\n'
+            f'    "measured_epoch_seconds": 5,\n'
+            f'    "batch_size": 1,\n'
+            f'    "resume_checkpoint": false,\n'
+            f'    "category": "optim",\n'
+            f'    "risk": "high",\n'
+            f'    "train_command": "python3 train.py"\n'
+            f'  }}\n'
+            f"  category must be one of: optim, arch, data, reg\n"
+            f"  risk must be: high or low\n"
+            f"  train_command: the shell command to run full training for this strategy"
         )
 
 
@@ -180,14 +202,34 @@ class CodexCLI:
     def run(prompt: str, cwd: Path, timeout: int, env: dict) -> str:
         import os as _os
         merged_env = {**_os.environ, **env} if env else None
-        result = subprocess.run(
-            ["codex", "--approval-policy", "auto-edit", "--quiet", "-p", prompt],
-            cwd=str(cwd), capture_output=True, text=True,
-            timeout=timeout, env=merged_env,
-        )
-        if result.returncode != 0 and not result.stdout.strip():
-            raise RuntimeError(f"Codex CLI failed (exit {result.returncode}): {result.stderr[:500]}")
-        return result.stdout
+        try:
+            result = subprocess.run(
+                ["codex", "exec", "--full-auto", prompt],
+                cwd=str(cwd), capture_output=True, text=True,
+                timeout=timeout, env=merged_env,
+            )
+        except subprocess.TimeoutExpired:
+            # Check if agent produced output before timeout
+            output_path = Path(cwd) / ".agentforge" / "agent_output.json"
+            if output_path.exists():
+                content = output_path.read_text().strip()
+                if content:
+                    return f"AGENTFORGE_SUMMARY_BEGIN\n{content}\nAGENTFORGE_SUMMARY_END"
+            raise
+        # Primary: read structured output from file (agent writes here)
+        output_path = Path(cwd) / ".agentforge" / "agent_output.json"
+        if output_path.exists():
+            content = output_path.read_text().strip()
+            if content:
+                return f"AGENTFORGE_SUMMARY_BEGIN\n{content}\nAGENTFORGE_SUMMARY_END"
+        # Fallback: look for markers in stdout
+        stdout = result.stdout or ""
+        if "AGENTFORGE_SUMMARY_BEGIN" in stdout:
+            return stdout
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Codex CLI failed (exit {result.returncode}): {(result.stderr or '')[:500]}")
+        raise RuntimeError("Codex produced no strategy output")
 
 
 class AgentSession:
@@ -200,6 +242,6 @@ class AgentSession:
         prompt = PromptBuilder.build(self.config, self.state)
         raw_output = CodexCLI.run(
             prompt=prompt, cwd=self.workdir,
-            timeout=1800, env={"CUDA_VISIBLE_DEVICES": "0"},
+            timeout=2400, env={"CUDA_VISIBLE_DEVICES": "0"},
         )
         return OutputParser.parse(raw_output)

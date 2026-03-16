@@ -113,10 +113,11 @@ class TestStrategy:
 
 class TestCodexCLI:
     def test_run_success(self):
+        stdout = "AGENTFORGE_SUMMARY_BEGIN\n[]\nAGENTFORGE_SUMMARY_END"
         with patch("agentforge.agent.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="output", returncode=0)
+            mock_run.return_value = MagicMock(stdout=stdout, returncode=0)
             result = CodexCLI.run("prompt", Path("/tmp"), 60, {})
-        assert result == "output"
+        assert "AGENTFORGE_SUMMARY_BEGIN" in result
 
     def test_run_timeout(self):
         with patch("agentforge.agent.subprocess.run") as mock_run:

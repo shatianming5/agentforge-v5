@@ -1,5 +1,6 @@
 from __future__ import annotations
 import subprocess
+import sys
 from pathlib import Path
 from agentforge.state import StrategyResult
 
@@ -24,7 +25,7 @@ class SelfRepair:
         venv_dir = workdir / ".agentforge" / "venv"
         if venv_dir.exists():
             shutil.rmtree(venv_dir)
-        subprocess.run(["python", "-m", "venv", str(venv_dir)],
+        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)],
                       check=True, capture_output=True)
         # Install dependencies from lockfile if it exists
         req_file = workdir / "requirements.txt"
