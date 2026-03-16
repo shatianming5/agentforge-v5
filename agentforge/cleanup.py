@@ -45,7 +45,26 @@ class Cleanup:
     def delete_loser_workdirs(self, workdirs: list[Path]) -> None:
         for wd in workdirs:
             if wd.exists():
-                shutil.rmtree(wd)
+                try:
+                    subprocess.run(
+                        ["git", "worktree", "remove", "--force", str(wd)],
+                        cwd=str(self.workdir),
+                        capture_output=True, timeout=30,
+                    )
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+                # Fallback: if worktree remove failed, force delete
+                if wd.exists():
+                    shutil.rmtree(wd)
+        # Prune stale worktree entries
+        try:
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=str(self.workdir),
+                capture_output=True, timeout=10,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
 
     def gc_old_checkpoints(self, keep_best: Path | None = None) -> None:
         ckpt_dir = self.workdir / ".agentforge" / "checkpoints"

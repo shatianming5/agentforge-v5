@@ -45,13 +45,9 @@ class ExperimentSetup:
     def create_clone(repo_path: Path, branch: str, workdir: Path) -> Path:
         clone_dir = workdir / f"clone-{branch.replace('/', '-')}"
         subprocess.run(
-            ["git", "clone", "--shared", "--branch", branch,
-             str(repo_path), str(clone_dir)],
+            ["git", "worktree", "add", str(clone_dir), branch],
+            cwd=str(repo_path),
             check=True, capture_output=True, timeout=30,
-        )
-        subprocess.run(
-            ["git", "config", "gc.auto", "0"],
-            cwd=str(clone_dir), check=True, capture_output=True,
         )
         # Symlink untracked files/dirs from source repo (e.g. data, models)
         ExperimentSetup._symlink_untracked(repo_path, clone_dir)
