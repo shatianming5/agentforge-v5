@@ -25,6 +25,7 @@ class Monitor:
     NAN_CHECK_EVERY = 3   # every 30s (3 * 10s interval)
     DISK_CHECK_EVERY = 6  # every 60s
     VRAM_CHECK_EVERY = 6  # every 60s
+    LOG_TAIL_EVERY = 3    # every 30s
 
     def __init__(self, processes, timeout, log_paths=None, workdir=None, disk_threshold=0.9):
         self._processes = processes  # list of (index, proc, log_path)
@@ -38,6 +39,7 @@ class Monitor:
         self._killed: set[int] = set()
         self._vram_history: dict[int, list[tuple[float, float]]] = {}  # idx -> [(time, vram_mb)]
         self._completion_times: list[float] = []  # for straggler median
+        self._last_log_pos: dict[int, int] = {}  # idx -> last read position
 
     @property
     def events(self):
@@ -75,6 +77,8 @@ class Monitor:
                     self._check_vram_trend(idx, proc)
             if counter % self.DISK_CHECK_EVERY == 0 and self._check_disk_critical():
                 self._add_event(-1, "disk", "Disk usage critical")
+            if counter % self.LOG_TAIL_EVERY == 0:
+                self._print_log_tails()
             self._check_stragglers()
             counter += 1
             time.sleep(self.CHECK_INTERVAL)
@@ -187,6 +191,78 @@ class Monitor:
                 proc.kill()
         self._add_event(index, reason, detail)
 
+    def _print_log_tails(self):
+        """定期打印各实验日志的最新内容。"""
+        import sys as _sys
+        elapsed = int(time.time() - self._start_time)
+        for idx, proc, log_path in self._processes:
+            if idx in self._killed or proc.poll() is not None:
+                continue
+            if not log_path.exists():
+                continue
+            try:
+                last_pos = self._last_log_pos.get(idx, 0)
+                with open(log_path) as f:
+                    f.seek(last_pos)
+                    new_content = f.read()
+                    new_pos = f.tell()
+                self._last_log_pos[idx] = new_pos
+                if not new_content.strip():
+                    continue
+                # 只显示最后几行有意义的内容
+                lines = new_content.strip().split("\n")
+                tail = lines[-3:] if len(lines) > 3 else lines
+                for line in tail:
+                    line = line.strip()
+                    if line:
+                        _sys.stdout.write(f"  [exp-{idx} {elapsed}s] {line}\n")
+                _sys.stdout.flush()
+            except OSError:
+                continue
+
     def _add_event(self, index, reason, detail):
         with self._lock:
             self._events.append(MonitorEvent(index, reason, detail))
+
+
+class SingleExperimentMonitor:
+    """单个实验的监控器，供 PipelineWorker 使用。"""
+
+    NAN_PATTERN = Monitor.NAN_PATTERN
+
+    def __init__(self, index: int, log_path: Path, timeout: int):
+        self.index = index
+        self.log_path = log_path
+        self.timeout = timeout
+        self._start_time = time.time()
+        self._last_pos = 0
+
+    def is_timed_out(self) -> bool:
+        return (time.time() - self._start_time) > self.timeout
+
+    def check_nan(self) -> bool:
+        if not self.log_path.exists():
+            return False
+        try:
+            with open(self.log_path) as f:
+                lines = f.readlines()[-100:]
+            return any(self.NAN_PATTERN.search(line) for line in lines)
+        except OSError:
+            return False
+
+    def read_new_lines(self) -> list[str]:
+        if not self.log_path.exists():
+            return []
+        try:
+            with open(self.log_path) as f:
+                f.seek(self._last_pos)
+                content = f.read()
+                self._last_pos = f.tell()
+            if not content.strip():
+                return []
+            return [l for l in content.strip().split("\n") if l.strip()]
+        except OSError:
+            return []
+
+    def elapsed_seconds(self) -> float:
+        return time.time() - self._start_time
