@@ -73,3 +73,61 @@ class TestOrchestrator:
         ]
         winners = Orchestrator.select_winners(results)
         assert winners == []
+
+
+def test_orchestrator_auto_setup_when_no_config(tmp_path):
+    """config_path=None 且 workdir 无 challenge.yaml 时触发 auto-setup。"""
+    from unittest.mock import patch, MagicMock
+    import json
+    from agentforge.orchestrator import Orchestrator
+
+    profile_data = {
+        "description": "Test auto-setup project",
+        "run_command": "python main.py",
+        "eval_metric": "accuracy",
+        "eval_direction": "maximize",
+        "eval_method": "parse stdout",
+        "suggested_target": 0.9,
+        "writable": ["main.py"],
+        "readonly": ["data/"],
+        "metric_extraction": "score = 0.9",
+        "import_checks": "",
+    }
+    af_dir = tmp_path / ".agentforge"
+    af_dir.mkdir()
+
+    def fake_codex(*args, **kwargs):
+        (af_dir / "project_profile.json").write_text(json.dumps(profile_data))
+        return MagicMock(returncode=0)
+
+    def fake_confirm(files):
+        for fname, content in files.items():
+            (tmp_path / fname).write_text(content)
+        return {f: "accepted" for f in files}
+
+    with patch("subprocess.run", side_effect=fake_codex), \
+         patch("agentforge.orchestrator.InteractiveConfirm") as MockConfirm:
+        mock_instance = MagicMock()
+        mock_instance.confirm_each = fake_confirm
+        MockConfirm.return_value = mock_instance
+
+        orch = Orchestrator(config_path=None, workdir=tmp_path)
+        assert (tmp_path / "challenge.yaml").exists()
+
+
+def test_orchestrator_skips_setup_when_config_provided(tmp_path):
+    """config_path 已提供时不触发 auto-setup。"""
+    import yaml
+    from agentforge.orchestrator import Orchestrator
+
+    config_content = {
+        "challenge": {"name": "test", "description": "test desc"},
+        "target": {"metric": "acc", "value": 0.9, "direction": "maximize"},
+        "tests": {"smoke": "echo ok", "full": "echo ok", "benchmark": "echo ok"},
+        "constraints": {"writable": ["x.py"], "read_only": ["data/"]},
+    }
+    config_path = tmp_path / "challenge.yaml"
+    config_path.write_text(yaml.dump(config_content))
+
+    orch = Orchestrator(config_path=config_path, workdir=tmp_path)
+    assert orch.config.challenge_name == "test"

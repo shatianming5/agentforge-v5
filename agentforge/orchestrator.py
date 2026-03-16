@@ -10,9 +10,12 @@ from pathlib import Path
 from typing import Callable
 
 from agentforge.agent import AgentSession, CodexCLI, OutputParser
+from agentforge.analyzer import ProjectAnalyzer
 from agentforge.anti_oscillation import AntiOscillation
 from agentforge.cleanup import Cleanup
 from agentforge.config import ChallengeConfig, load_config
+from agentforge.confirm import InteractiveConfirm
+from agentforge.generator import ConfigGenerator
 from agentforge.experiment import ExperimentSetup
 from agentforge.hardware import HardwareDetector
 from agentforge.repair import SelfRepair
@@ -26,12 +29,46 @@ from agentforge.strategy import StrategyValidator
 
 
 class Orchestrator:
-    def __init__(self, config_path: Path, workdir: Path,
+    def __init__(self, config_path: Path | None, workdir: Path,
                  stop_flag: Callable[[], bool] | None = None):
-        self.config = load_config(config_path)
         self.workdir = workdir
         self.state_file = StateFile(workdir / ".agentforge" / "state.json")
         self._stop_flag = stop_flag or (lambda: False)
+
+        # Auto-setup: 如果没有 config_path 且 workdir 下没有 challenge.yaml
+        if config_path is None:
+            config_path = self._auto_setup()
+
+        self.config = load_config(config_path)
+
+    def _auto_setup(self) -> Path:
+        """自动分析项目并生成配置文件。"""
+        challenge_path = self.workdir / "challenge.yaml"
+        if challenge_path.exists():
+            return challenge_path
+
+        print("[AgentForge] 未找到 challenge.yaml，启动自动配置...")
+
+        # Step 1: 分析项目
+        print("[AgentForge] 正在分析项目结构（Codex read-only）...")
+        analyzer = ProjectAnalyzer(workdir=self.workdir)
+        profile = analyzer.analyze()
+        print(f"[AgentForge] 分析完成: {profile.description}")
+
+        # Step 2: 生成配置文件
+        generator = ConfigGenerator(profile)
+        files = generator.generate_all()
+
+        # Step 3: 交互确认
+        confirm = InteractiveConfirm(workdir=self.workdir)
+        results = confirm.confirm_each(files)
+
+        rejected = [f for f, r in results.items() if r == "rejected"]
+        if "challenge.yaml" in rejected:
+            raise RuntimeError("challenge.yaml 被拒绝，无法继续")
+
+        print("[AgentForge] 配置已保存。开始优化...")
+        return challenge_path
 
     def run(self) -> None:
         state = self._init_or_resume()
