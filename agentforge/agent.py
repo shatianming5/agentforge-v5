@@ -507,3 +507,19 @@ class AgentSession:
                 print(f"[AgentForge] Found {len(strategies)} branches via fallback")
                 return strategies
             raise
+
+    def develop_specs(self) -> list[StrategySpec]:
+        prompt = PromptBuilder.build_spec_only(self.config, self.state)
+        first_gpu = os.environ.get(
+            "CUDA_VISIBLE_DEVICES", "0"
+        ).split(",")[0].strip()
+        try:
+            raw_output = CodexCLI.run(
+                prompt=prompt, cwd=self.workdir,
+                timeout=1800,  # 30 minutes (spec-only is much faster)
+                env={"CUDA_VISIBLE_DEVICES": first_gpu},
+            )
+            return OutputParser.parse_specs(raw_output)
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
+            print(f"[AgentForge] Spec generation failed: {e}")
+            raise

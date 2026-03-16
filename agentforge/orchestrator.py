@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from agentforge.agent import AgentSession, CodexCLI, OutputParser
+from agentforge.agent import AgentSession, CodexCLI, OutputParser, Strategy
+from agentforge.pipeline import PipelineOrchestrator
 from agentforge.analyzer import ProjectAnalyzer
 from agentforge.anti_oscillation import AntiOscillation
 from agentforge.cleanup import Cleanup
@@ -131,13 +132,27 @@ class Orchestrator:
         sandbox = Sandbox(self.workdir, self.config.read_only)
         sandbox.setup()
 
-        # Phase 1
+        # Phase 1: Generate strategy specs only (no code)
         self.display.phase1_start()
         agent = AgentSession(self.config, state, self.workdir)
-        strategies = agent.develop()
+        try:
+            specs = agent.develop_specs()
+        except (RuntimeError, ValueError) as e:
+            self.display.warn(f"策略规格生成失败: {e}")
+            sandbox.teardown()
+            return state
 
-        # Validate strategies
-        warnings = StrategyValidator.validate(strategies)
+        # Validate spec diversity
+        pseudo_strategies = [
+            Strategy(
+                name=s.name, branch="", confidence=0.5,
+                measured_vram_gb=0, measured_epoch_seconds=0,
+                batch_size=1, resume_checkpoint=False,
+                category=s.category, risk=s.risk,
+            )
+            for s in specs
+        ]
+        warnings = StrategyValidator.validate(pseudo_strategies)
         if warnings:
             state.hints_pending.extend(
                 f"Strategy validation: {w}" for w in warnings
@@ -147,40 +162,48 @@ class Orchestrator:
 
         sandbox.teardown()
         t1 = time.time()
-        self.display.phase1_done((t1 - t0) / 60, len(strategies))
+        self.display.phase1_done((t1 - t0) / 60, len(specs))
 
         # Cleanup between phases
         Cleanup(self.workdir).between_phases()
 
-        # Phase 2
-        experiments = []
-        for i, s in enumerate(strategies):
-            try:
-                exp = ExperimentSetup.create(
-                    strategy=s, index=i, repo_path=self.workdir,
-                    workdir=self.workdir / ".agentforge" / "runs",
-                    hw=state.hardware,
-                    train_command=shlex.split(self.config.test_benchmark),
-                )
-                experiments.append(exp)
-            except subprocess.CalledProcessError as e:
-                self.display.warn(f"跳过策略 {s.name}: 分支 {s.branch} 不可用")
-        if not experiments:
-            self.display.skip_round("所有策略分支均不可用")
-            t2 = time.time()
-            round_result = RoundResult(
-                round=state.current_round, experiments=[],
-                winners=[], phase1_minutes=(t1 - t0) / 60,
-                phase2_minutes=(t2 - t1) / 60,
-            )
-            state.rounds.append(round_result)
-            state.budget.rounds_used += 1
-            state.current_round += 1
-            self.state_file.save(state)
-            return state
-        self.display.phase2_start(len(experiments))
-        runner = ParallelRunner(experiments, self.config, timeout=345600, workdir=self.workdir)
-        results = runner.run(N=state.N)
+        # Build config context for workers
+        config_context = (
+            f"Challenge: {self.config.challenge_name}\n"
+            f"Description: {self.config.challenge_description}\n"
+            f"Target: {self.config.target_metric} {self.config.target_direction} "
+            f"{self.config.target_value}\n"
+            f"Read-only: {', '.join(self.config.read_only)}"
+        )
+
+        # Pipeline Phase: parallel implement -> train -> score
+        self.display.phase2_start(len(specs))
+        pipeline = PipelineOrchestrator(
+            specs=specs,
+            config=self.config,
+            hw=state.hardware,
+            round_num=state.current_round,
+            workdir=self.workdir,
+            timeout=345600,
+            config_context=config_context,
+        )
+
+        # Try to setup live progress display (LiveProgressDisplay may not be available yet)
+        live_display = None
+        try:
+            from agentforge.display import LiveProgressDisplay
+            live_display = LiveProgressDisplay(num_workers=len(specs))
+            pipeline.on_event(live_display.handle_event)
+            live_display.start()
+        except (ImportError, Exception):
+            pass
+
+        try:
+            results = pipeline.run()
+        finally:
+            if live_display:
+                live_display.stop()
+
         t2 = time.time()
         self.display.phase2_done((t2 - t1) / 60)
 
@@ -189,23 +212,6 @@ class Orchestrator:
             diagnosis = SelfRepair.diagnose_all_fail(results)
             if diagnosis == "environmental":
                 SelfRepair.rebuild_venv(self.workdir)
-            elif diagnosis == "code_related":
-                error_context = SelfRepair.collect_error_context(results)
-                try:
-                    repair_output = CodexCLI.run(
-                        prompt=error_context, cwd=self.workdir,
-                        timeout=1800, env={"CUDA_VISIBLE_DEVICES": "0"},
-                    )
-                    repair_strategies = OutputParser.parse(repair_output)
-                    if repair_strategies:
-                        strategies = repair_strategies
-                except (RuntimeError, ValueError):
-                    if state.best.commit:
-                        SelfRepair.rollback_to_commit(self.workdir, state.best.commit)
-
-        # Scoring-failure repair: training ok but score=0.0
-        if SelfRepair.has_scoring_failures(results):
-            results = self._repair_scoring(results, experiments, state)
 
         # Select winners
         d = self.config.target_direction
@@ -250,9 +256,6 @@ class Orchestrator:
         round_hours = (t2 - t0) / 3600 * max(state.hardware.num_gpus, 1)
         state.budget.gpu_hours_used += round_hours
         state.hints_pending.clear()
-
-        loser_workdirs = [e.workdir for e in experiments if e.strategy.name not in winners]
-        Cleanup(self.workdir).delete_loser_workdirs(loser_workdirs)
 
         return state
 
