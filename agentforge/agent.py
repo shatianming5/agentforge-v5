@@ -240,6 +240,22 @@ class CodexCLI:
     def run(prompt: str, cwd: Path, timeout: int, env: dict) -> str:
         merged_env = {**os.environ, **(env or {})}
         agentforge_dir = Path(cwd) / ".agentforge"
+        # Use pre-seeded agent_output.json if present (skip Codex)
+        agent_output_path = agentforge_dir / "agent_output.json"
+        if agent_output_path.exists():
+            try:
+                raw = agent_output_path.read_text().strip()
+                data = json.loads(raw)
+                content = None
+                if isinstance(data, list) and data:
+                    content = raw
+                elif isinstance(data, dict) and "strategies" in data:
+                    content = json.dumps(data["strategies"])
+                if content:
+                    agent_output_path.unlink()  # consume so next round runs Codex
+                    return f"AGENTFORGE_SUMMARY_BEGIN\n{content}\nAGENTFORGE_SUMMARY_END"
+            except (json.JSONDecodeError, OSError):
+                pass
         try:
             result = subprocess.run(
                 ["codex", "exec", "--full-auto", prompt],
