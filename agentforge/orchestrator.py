@@ -190,7 +190,6 @@ class Orchestrator:
             if diagnosis == "environmental":
                 SelfRepair.rebuild_venv(self.workdir)
             elif diagnosis == "code_related":
-                # Launch new Agent session with error context
                 error_context = SelfRepair.collect_error_context(results)
                 try:
                     repair_output = CodexCLI.run(
@@ -201,9 +200,12 @@ class Orchestrator:
                     if repair_strategies:
                         strategies = repair_strategies
                 except (RuntimeError, ValueError):
-                    # Repair failed, rollback to best commit
                     if state.best.commit:
                         SelfRepair.rollback_to_commit(self.workdir, state.best.commit)
+
+        # Scoring-failure repair: training ok but score=0.0
+        if SelfRepair.has_scoring_failures(results):
+            results = self._repair_scoring(results, experiments, state)
 
         # Select winners
         d = self.config.target_direction
@@ -296,6 +298,70 @@ class Orchestrator:
                 content = path.read_bytes()
                 return f"sha256:{hashlib.sha256(content).hexdigest()[:16]}"
         return ""
+
+    def _repair_scoring(
+        self,
+        results: list[StrategyResult],
+        experiments,
+        state: SessionState,
+    ) -> list[StrategyResult]:
+        """Auto-repair scoring pipeline: diagnose failure, let Codex fix, re-score."""
+        # Find first experiment with scoring failure to diagnose
+        failed_exp = None
+        for r, exp in zip(results, experiments):
+            if r.status == "ok" and r.score == 0.0:
+                failed_exp = exp
+                break
+        if failed_exp is None:
+            return results
+
+        for attempt in range(SelfRepair.MAX_REPAIR_ATTEMPTS):
+            failure_type, error_detail = SelfRepair.diagnose_scoring(
+                failed_exp.workdir, self.config,
+            )
+            if failure_type == "unknown":
+                break
+
+            self.display.warn(
+                f"评分失败 ({failure_type}), 自动修复 #{attempt + 1}..."
+            )
+            prompt = SelfRepair.build_repair_prompt(
+                failure_type, error_detail, self.workdir, self.config,
+            )
+            if not prompt:
+                break
+
+            try:
+                CodexCLI.run(
+                    prompt=prompt, cwd=self.workdir,
+                    timeout=300, env={"CUDA_VISIBLE_DEVICES": "0"},
+                )
+            except (RuntimeError, subprocess.TimeoutExpired):
+                self.display.warn("修复尝试失败")
+                break
+
+            # Re-score all failed experiments
+            new_results = []
+            for r, exp in zip(results, experiments):
+                if r.status == "ok" and r.score == 0.0:
+                    from agentforge.scorer import Scorer
+                    new_score = Scorer.score(exp, self.config, 0, N=state.N)
+                    new_results.append(StrategyResult(
+                        id=r.id, strategy=r.strategy, branch=r.branch,
+                        score=new_score, status=r.status, error=r.error,
+                        actual_vram_gb=r.actual_vram_gb,
+                        actual_epoch_seconds=r.actual_epoch_seconds,
+                        actual_batch_size=r.actual_batch_size,
+                    ))
+                else:
+                    new_results.append(r)
+            results = new_results
+
+            if not SelfRepair.has_scoring_failures(results):
+                self.display.warn("修复成功")
+                break
+
+        return results
 
     @staticmethod
     def select_winners(results: list[StrategyResult], direction: str = "maximize") -> list[str]:
