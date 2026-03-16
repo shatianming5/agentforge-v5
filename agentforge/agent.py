@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -200,8 +201,7 @@ class OutputParser:
 class CodexCLI:
     @staticmethod
     def run(prompt: str, cwd: Path, timeout: int, env: dict) -> str:
-        import os as _os
-        merged_env = {**_os.environ, **env} if env else None
+        merged_env = {**os.environ, **(env or {})}
         try:
             result = subprocess.run(
                 ["codex", "exec", "--full-auto", prompt],
@@ -232,6 +232,51 @@ class CodexCLI:
         raise RuntimeError("Codex produced no strategy output")
 
 
+class BranchDetector:
+    """Fallback: detect strategies from git branches if Codex output parsing fails."""
+
+    @staticmethod
+    def detect(workdir: Path, current_round: int) -> list[Strategy]:
+        prefix = f"agentforge/iter-{current_round}/exp-"
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--list", f"{prefix}*"],
+                cwd=str(workdir), capture_output=True, text=True, timeout=10,
+            )
+            branches = [
+                b.strip().lstrip("* ")
+                for b in result.stdout.strip().split("\n")
+                if b.strip()
+            ]
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return []
+        strategies = []
+        for branch in sorted(branches):
+            # Only include branches with actual commits beyond main
+            try:
+                diff = subprocess.run(
+                    ["git", "log", f"main..{branch}", "--oneline"],
+                    cwd=str(workdir), capture_output=True, text=True, timeout=10,
+                )
+                if not diff.stdout.strip():
+                    continue  # Empty branch, skip
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                continue
+            strategies.append(Strategy(
+                name=f"auto-{branch.split('/')[-1]}",
+                branch=branch,
+                confidence=0.5,
+                measured_vram_gb=0.0,
+                measured_epoch_seconds=0.0,
+                batch_size=2,
+                resume_checkpoint=False,
+                category="auto-detected",
+                risk="medium",
+                train_command="",
+            ))
+        return strategies
+
+
 class AgentSession:
     def __init__(self, config, state, workdir: Path):
         self.config = config
@@ -240,8 +285,24 @@ class AgentSession:
 
     def develop(self) -> list[Strategy]:
         prompt = PromptBuilder.build(self.config, self.state)
-        raw_output = CodexCLI.run(
-            prompt=prompt, cwd=self.workdir,
-            timeout=2400, env={"CUDA_VISIBLE_DEVICES": "0"},
-        )
-        return OutputParser.parse(raw_output)
+        first_gpu = os.environ.get(
+            "CUDA_VISIBLE_DEVICES", "0"
+        ).split(",")[0].strip()
+        try:
+            raw_output = CodexCLI.run(
+                prompt=prompt, cwd=self.workdir,
+                timeout=43200,  # 12 hours
+                env={"CUDA_VISIBLE_DEVICES": first_gpu},
+            )
+            return OutputParser.parse(raw_output)
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
+            # Fallback: detect branches created by Codex
+            print(f"[AgentForge] Codex output parsing failed: {e}")
+            print("[AgentForge] Falling back to branch detection...")
+            strategies = BranchDetector.detect(
+                self.workdir, self.state.current_round
+            )
+            if strategies:
+                print(f"[AgentForge] Found {len(strategies)} branches via fallback")
+                return strategies
+            raise

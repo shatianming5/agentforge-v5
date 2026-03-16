@@ -37,20 +37,29 @@ class HardwareDetector:
     def _list_gpus() -> list[dict]:
         try:
             result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name,memory.total",
+                ["nvidia-smi", "--query-gpu=index,name,memory.total",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode != 0:
                 return []
-            gpus = []
+            all_gpus = []
             for line in result.stdout.strip().split("\n"):
                 if not line.strip():
                     continue
                 parts = line.split(", ")
-                gpus.append({"name": parts[0].strip(), "memory_mb": int(parts[1].strip())})
-            return gpus
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+                all_gpus.append({
+                    "index": int(parts[0].strip()),
+                    "name": parts[1].strip(),
+                    "memory_mb": int(parts[2].strip()),
+                })
+            # Respect CUDA_VISIBLE_DEVICES
+            visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if visible:
+                visible_ids = [int(x.strip()) for x in visible.split(",") if x.strip()]
+                all_gpus = [g for g in all_gpus if g["index"] in visible_ids]
+            return all_gpus
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
             return []
 
     @staticmethod

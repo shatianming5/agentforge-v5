@@ -33,7 +33,12 @@ class ExperimentSetup:
         else:
             env["PYTHONHASHSEED"] = str(42 + index)
         if hw.device == "cuda":
-            env["CUDA_VISIBLE_DEVICES"] = str(index % hw.num_gpus)
+            visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            if visible:
+                gpu_ids = [x.strip() for x in visible.split(",") if x.strip()]
+                env["CUDA_VISIBLE_DEVICES"] = gpu_ids[index % len(gpu_ids)]
+            else:
+                env["CUDA_VISIBLE_DEVICES"] = str(index % hw.num_gpus)
         return env
 
     @staticmethod
