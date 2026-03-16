@@ -183,25 +183,63 @@ class OutputParser:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in Agent summary: {e}") from e
-        return [
-            Strategy(
-                name=d["name"], branch=d["branch"], confidence=d["confidence"],
-                measured_vram_gb=d["measured_vram_gb"],
-                measured_epoch_seconds=d["measured_epoch_seconds"],
-                batch_size=d["batch_size"],
-                resume_checkpoint=d["resume_checkpoint"],
+        if not isinstance(data, list) or not data:
+            raise ValueError("Agent summary must be a non-empty JSON array")
+        strategies = []
+        for d in data:
+            if "name" not in d or "branch" not in d:
+                continue  # Skip entries without required fields
+            strategies.append(Strategy(
+                name=d["name"],
+                branch=d["branch"],
+                confidence=float(d.get("confidence", 0.5)),
+                measured_vram_gb=float(d.get("measured_vram_gb", 0.0)),
+                measured_epoch_seconds=float(d.get("measured_epoch_seconds", 0.0)),
+                batch_size=int(d.get("batch_size", 2)),
+                resume_checkpoint=bool(d.get("resume_checkpoint", False)),
                 category=d.get("category", "unknown"),
-                risk=d.get("risk", "low"),
+                risk=d.get("risk", "medium"),
                 train_command=d.get("train_command", ""),
-            )
-            for d in data
-        ]
+            ))
+        if not strategies:
+            raise ValueError("No valid strategies found in Agent output")
+        return strategies
 
 
 class CodexCLI:
     @staticmethod
+    def _find_summary_json(agentforge_dir: Path) -> str | None:
+        """Search .agentforge/ for any JSON file containing strategy data."""
+        if not agentforge_dir.is_dir():
+            return None
+        # Try exact name first, then any JSON
+        candidates = []
+        exact = agentforge_dir / "agent_output.json"
+        if exact.exists():
+            candidates.insert(0, exact)
+        for f in sorted(agentforge_dir.glob("*.json"), key=os.path.getmtime, reverse=True):
+            if f.name != "state.json" and f not in candidates:
+                candidates.append(f)
+        for f in candidates:
+            try:
+                content = f.read_text().strip()
+                if not content:
+                    continue
+                data = json.loads(content)
+                # Accept: direct array, or object with "strategies" key
+                if isinstance(data, list):
+                    return content
+                if isinstance(data, dict) and "strategies" in data:
+                    return json.dumps(data["strategies"])
+                return None
+            except (json.JSONDecodeError, OSError):
+                continue
+        return None
+
+    @staticmethod
     def run(prompt: str, cwd: Path, timeout: int, env: dict) -> str:
         merged_env = {**os.environ, **(env or {})}
+        agentforge_dir = Path(cwd) / ".agentforge"
         try:
             result = subprocess.run(
                 ["codex", "exec", "--full-auto", prompt],
@@ -209,19 +247,14 @@ class CodexCLI:
                 timeout=timeout, env=merged_env,
             )
         except subprocess.TimeoutExpired:
-            # Check if agent produced output before timeout
-            output_path = Path(cwd) / ".agentforge" / "agent_output.json"
-            if output_path.exists():
-                content = output_path.read_text().strip()
-                if content:
-                    return f"AGENTFORGE_SUMMARY_BEGIN\n{content}\nAGENTFORGE_SUMMARY_END"
-            raise
-        # Primary: read structured output from file (agent writes here)
-        output_path = Path(cwd) / ".agentforge" / "agent_output.json"
-        if output_path.exists():
-            content = output_path.read_text().strip()
+            content = CodexCLI._find_summary_json(agentforge_dir)
             if content:
                 return f"AGENTFORGE_SUMMARY_BEGIN\n{content}\nAGENTFORGE_SUMMARY_END"
+            raise
+        # Primary: read structured output from any JSON in .agentforge/
+        content = CodexCLI._find_summary_json(agentforge_dir)
+        if content:
+            return f"AGENTFORGE_SUMMARY_BEGIN\n{content}\nAGENTFORGE_SUMMARY_END"
         # Fallback: look for markers in stdout
         stdout = result.stdout or ""
         if "AGENTFORGE_SUMMARY_BEGIN" in stdout:
