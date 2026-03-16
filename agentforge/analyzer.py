@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
@@ -48,3 +50,73 @@ class ProjectProfile:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+class ProjectAnalyzer:
+    """调用 Codex CLI read-only 分析 repo，生成 ProjectProfile。"""
+
+    PROMPT_TEMPLATE = """\
+你是一个项目分析器。分析当前目录的代码，返回结构化 JSON。
+
+你可以：
+  - 读取任何文件（cat, head, find, ls）
+  - 跑简短的测试（python -c "import torch"）
+你不能：
+  - 修改任何文件（除了写入 .agentforge/project_profile.json）
+
+请分析并将 JSON 写入 .agentforge/project_profile.json，字段如下：
+{{
+  "description": "项目简短描述",
+  "run_command": "主运行命令，如 python train.py",
+  "run_args": ["默认参数列表"],
+  "eval_metric": "评估指标名，如 val_loss / accuracy / sharpe_ratio",
+  "eval_direction": "minimize 或 maximize",
+  "eval_method": "如何获取指标的描述",
+  "baseline_value": null 或当前基准值(float),
+  "suggested_target": 建议目标值(float),
+  "writable": ["可修改的文件/目录列表"],
+  "readonly": ["不可修改的文件/目录列表"],
+  "python_cmd": "python3 或 conda run -n env python",
+  "needs_gpu": false,
+  "result_location": "stdout / checkpoint / output_file",
+  "result_pattern": "结果文件 glob 模式",
+  "metric_extraction": "Python 代码片段，执行后将指标值赋给变量 score",
+  "import_checks": "Python 代码片段，验证依赖可导入"
+}}
+
+重点分析：
+1. 找到主运行入口和启动方式
+2. 找到评估指标（看 eval/val/metric 相关代码）
+3. 写一段 Python 代码片段放入 metric_extraction，该代码执行后将指标值赋给变量 score
+4. 识别哪些文件是数据/评估（不该改），哪些是可优化的（可以改）
+5. 根据项目现状建议合理的优化目标值
+6. 写一段 import 检查代码放入 import_checks
+"""
+
+    def __init__(self, workdir: Path):
+        self.workdir = Path(workdir)
+
+    def _build_prompt(self) -> str:
+        return self.PROMPT_TEMPLATE
+
+    def _read_profile(self) -> ProjectProfile:
+        profile_path = self.workdir / ".agentforge" / "project_profile.json"
+        if not profile_path.exists():
+            raise FileNotFoundError(
+                f"Codex 未生成 profile 文件: {profile_path}"
+            )
+        data = json.loads(profile_path.read_text())
+        return ProjectProfile.from_dict(data)
+
+    def analyze(self) -> ProjectProfile:
+        af_dir = self.workdir / ".agentforge"
+        af_dir.mkdir(parents=True, exist_ok=True)
+        prompt = self._build_prompt()
+        subprocess.run(
+            ["codex", "exec", "-s", "read-only", prompt],
+            cwd=str(self.workdir),
+            timeout=600,
+            capture_output=True,
+            text=True,
+        )
+        return self._read_profile()

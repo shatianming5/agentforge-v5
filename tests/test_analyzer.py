@@ -80,3 +80,76 @@ def test_profile_to_dict_roundtrip():
 def test_profile_missing_required_field():
     with pytest.raises(KeyError):
         ProjectProfile.from_dict({"description": "test"})
+
+
+from unittest.mock import patch, MagicMock
+from agentforge.analyzer import ProjectAnalyzer
+
+
+def test_analyzer_builds_prompt(tmp_path):
+    """检查 prompt 包含关键指令。"""
+    analyzer = ProjectAnalyzer(workdir=tmp_path)
+    prompt = analyzer._build_prompt()
+    assert "project_profile.json" in prompt
+    assert "description" in prompt
+    assert "run_command" in prompt
+    assert "eval_metric" in prompt
+    assert "metric_extraction" in prompt
+
+
+def test_analyzer_parse_profile_json(tmp_path):
+    """从 .agentforge/project_profile.json 解析 profile。"""
+    profile_data = {
+        "description": "Test project",
+        "run_command": "python train.py",
+        "eval_metric": "loss",
+        "eval_direction": "minimize",
+        "eval_method": "parse stdout",
+        "suggested_target": 1.0,
+        "writable": ["train.py"],
+        "readonly": ["data/"],
+        "metric_extraction": "score = 1.0",
+    }
+    af_dir = tmp_path / ".agentforge"
+    af_dir.mkdir()
+    (af_dir / "project_profile.json").write_text(json.dumps(profile_data))
+
+    analyzer = ProjectAnalyzer(workdir=tmp_path)
+    profile = analyzer._read_profile()
+    assert profile.description == "Test project"
+    assert profile.eval_metric == "loss"
+
+
+def test_analyzer_analyze_calls_codex(tmp_path):
+    """analyze() 调用 codex exec 并返回 profile。"""
+    profile_data = {
+        "description": "Analyzed project",
+        "run_command": "python main.py",
+        "eval_metric": "acc",
+        "eval_direction": "maximize",
+        "eval_method": "read from output",
+        "suggested_target": 0.95,
+        "writable": ["main.py"],
+        "readonly": [],
+        "metric_extraction": "score = 0.95",
+    }
+    af_dir = tmp_path / ".agentforge"
+    af_dir.mkdir()
+
+    def fake_codex_run(*args, **kwargs):
+        (af_dir / "project_profile.json").write_text(json.dumps(profile_data))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_codex_run):
+        analyzer = ProjectAnalyzer(workdir=tmp_path)
+        profile = analyzer.analyze()
+        assert profile.description == "Analyzed project"
+        assert profile.eval_metric == "acc"
+
+
+def test_analyzer_analyze_no_profile_raises(tmp_path):
+    """Codex 没写 profile 文件时 raise。"""
+    with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+        analyzer = ProjectAnalyzer(workdir=tmp_path)
+        with pytest.raises(FileNotFoundError):
+            analyzer.analyze()
