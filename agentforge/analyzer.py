@@ -112,11 +112,14 @@ class ProjectAnalyzer:
         af_dir = self.workdir / ".agentforge"
         af_dir.mkdir(parents=True, exist_ok=True)
         prompt = self._build_prompt()
-        subprocess.run(
-            ["codex", "exec", "-s", "read-only", prompt],
+        result = subprocess.run(
+            ["codex", "exec", "-s", "workspace-write", prompt],
             cwd=str(self.workdir),
             timeout=600,
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            stderr = (result.stderr or "")[:500]
+            print(f"[AgentForge] Codex 分析警告 (exit {result.returncode}): {stderr}")
         return self._read_profile()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import yaml
+
 from agentforge.analyzer import ProjectProfile
 
 
@@ -12,35 +14,31 @@ class ConfigGenerator:
     def generate_challenge_yaml(self) -> str:
         p = self.profile
         run_args_str = " ".join(p.run_args) if p.run_args else ""
-        writable_list = "\n".join(f"    - {w}" for w in p.writable)
-        readonly_list = "\n".join(f"    - {r}" for r in p.readonly)
-        baseline_line = (
-            f"    Baseline: {p.baseline_value}"
-            if p.baseline_value is not None
-            else ""
-        )
+        desc_lines = [p.description, f"Run command: {p.run_command} {run_args_str}"]
+        if p.baseline_value is not None:
+            desc_lines.append(f"Baseline: {p.baseline_value}")
 
-        return (
-            f"challenge:\n"
-            f"  name: '{p.description[:60]}'\n"
-            f"  description: |\n"
-            f"    {p.description}\n"
-            f"    Run command: {p.run_command} {run_args_str}\n"
-            f"{baseline_line}\n"
-            f"target:\n"
-            f"  metric: {p.eval_metric}\n"
-            f"  value: {p.suggested_target}\n"
-            f"  direction: {p.eval_direction}\n"
-            f"tests:\n"
-            f"  smoke: '{p.python_cmd} test_suite.py'\n"
-            f"  full: '{p.python_cmd} test_suite.py'\n"
-            f"  benchmark: '{p.python_cmd} benchmark.py'\n"
-            f"constraints:\n"
-            f"  writable:\n"
-            f"{writable_list}\n"
-            f"  read_only:\n"
-            f"{readonly_list}\n"
-        )
+        data = {
+            "challenge": {
+                "name": p.description[:60],
+                "description": "\n".join(desc_lines) + "\n",
+            },
+            "target": {
+                "metric": p.eval_metric,
+                "value": p.suggested_target,
+                "direction": p.eval_direction,
+            },
+            "tests": {
+                "smoke": f"{p.python_cmd} test_suite.py",
+                "full": f"{p.python_cmd} test_suite.py",
+                "benchmark": f"{p.python_cmd} benchmark.py",
+            },
+            "constraints": {
+                "writable": p.writable,
+                "read_only": p.readonly,
+            },
+        }
+        return yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     def generate_benchmark_py(self) -> str:
         p = self.profile

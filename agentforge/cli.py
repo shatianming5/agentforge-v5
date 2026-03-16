@@ -57,7 +57,7 @@ def status(workdir):
 def stop(workdir):
     """Stop the daemon gracefully."""
     wd = _get_workdir(workdir)
-    daemon = Daemon(config_path=Path("."), workdir=wd)
+    daemon = Daemon(config_path=None, workdir=wd)
     daemon.stop()
 
 
@@ -82,7 +82,7 @@ def hint(message, workdir):
 def skip(workdir):
     """Skip the current phase (Phase 1: stop Agent; Phase 2: stop training, score partials)."""
     wd = _get_workdir(workdir)
-    daemon = Daemon(config_path=Path("."), workdir=wd)
+    daemon = Daemon(config_path=None, workdir=wd)
     pid = daemon.read_pid()
     if not pid:
         click.echo("No running daemon found.")
