@@ -210,3 +210,55 @@ class TestIntegration:
         state2 = sf.load()
         assert state2.session_id == state.session_id
         assert state2.budget.rounds_used == 1
+
+
+def test_auto_setup_end_to_end(tmp_path):
+    """完整 auto-setup 流程：分析 → 生成 → 确认 → 加载配置。"""
+    from unittest.mock import patch, MagicMock
+    import json
+
+    # 创建一个假项目
+    (tmp_path / "train.py").write_text("print('training')")
+    (tmp_path / "model.py").write_text("class Model: pass")
+    (tmp_path / "data").mkdir()
+
+    profile_data = {
+        "description": "Fake ML training project",
+        "run_command": "python train.py",
+        "run_args": [],
+        "eval_metric": "val_loss",
+        "eval_direction": "minimize",
+        "eval_method": "parse stdout for val_loss",
+        "baseline_value": 2.5,
+        "suggested_target": 1.8,
+        "writable": ["train.py", "model.py"],
+        "readonly": ["data/"],
+        "python_cmd": "python3",
+        "needs_gpu": False,
+        "result_location": "stdout",
+        "result_pattern": "",
+        "metric_extraction": "score = 1.5",
+        "import_checks": "",
+    }
+
+    af_dir = tmp_path / ".agentforge"
+    af_dir.mkdir()
+
+    def fake_codex(*args, **kwargs):
+        (af_dir / "project_profile.json").write_text(json.dumps(profile_data))
+        return MagicMock(returncode=0)
+
+    with patch("subprocess.run", side_effect=fake_codex), \
+         patch("builtins.input", return_value="Y"):
+        from agentforge.orchestrator import Orchestrator
+        orch = Orchestrator(config_path=None, workdir=tmp_path)
+
+    # 验证文件已生成
+    assert (tmp_path / "challenge.yaml").exists()
+    assert (tmp_path / "benchmark.py").exists()
+    assert (tmp_path / "test_suite.py").exists()
+
+    # 验证配置已正确加载
+    assert orch.config.target_metric == "val_loss"
+    assert orch.config.target_direction == "minimize"
+    assert orch.config.target_value == 1.8
