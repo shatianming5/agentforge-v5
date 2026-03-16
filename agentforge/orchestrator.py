@@ -15,6 +15,7 @@ from agentforge.anti_oscillation import AntiOscillation
 from agentforge.cleanup import Cleanup
 from agentforge.config import ChallengeConfig, is_better, best_initial_score, load_config
 from agentforge.data import prepare_data
+from agentforge.display import Display, DisplayConfig
 from agentforge.confirm import InteractiveConfirm
 from agentforge.generator import ConfigGenerator
 from agentforge.experiment import ExperimentSetup
@@ -73,6 +74,16 @@ class Orchestrator:
 
     def run(self) -> None:
         state = self._init_or_resume()
+        self.display = Display(
+            hw=state.hardware, N=state.N,
+            cfg=DisplayConfig(
+                direction=self.config.target_direction,
+                target_metric=self.config.target_metric,
+                target_value=self.config.target_value,
+            ),
+        )
+        self.display.header()
+        t_start = time.time()
         while not self._done(state) and not self._stop_flag():
             state = self._run_round(state)
             self.state_file.save(state)
@@ -80,6 +91,9 @@ class Orchestrator:
         done = is_better(state.best.score, self.config.target_value, d) or state.best.score == self.config.target_value
         state.status = "completed" if done else "paused"
         self.state_file.save(state)
+        elapsed = (time.time() - t_start) / 60
+        self.display.final_summary(state.status, state.best.score,
+                                   state.budget.rounds_used, elapsed)
 
     def _init_or_resume(self) -> SessionState:
         if self.state_file.exists():
@@ -105,17 +119,20 @@ class Orchestrator:
     def _run_round(self, state: SessionState) -> SessionState:
         state.current_round += 1
         t0 = time.time()
+        self.display.round_start(state.current_round)
 
         if AntiOscillation.check_plateau(state.score_trajectory):
             state.hints_pending.append(
                 "WARNING: 3+ rounds without improvement. Try fundamentally different approaches."
             )
+            self.display.warn("3+ rounds without improvement")
 
         # Sandbox: protect read-only files
         sandbox = Sandbox(self.workdir, self.config.read_only)
         sandbox.setup()
 
         # Phase 1
+        self.display.phase1_start()
         agent = AgentSession(self.config, state, self.workdir)
         strategies = agent.develop()
 
@@ -125,9 +142,12 @@ class Orchestrator:
             state.hints_pending.extend(
                 f"Strategy validation: {w}" for w in warnings
             )
+            for w in warnings:
+                self.display.warn(w)
 
         sandbox.teardown()
         t1 = time.time()
+        self.display.phase1_done((t1 - t0) / 60, len(strategies))
 
         # Cleanup between phases
         Cleanup(self.workdir).between_phases()
@@ -144,9 +164,9 @@ class Orchestrator:
                 )
                 experiments.append(exp)
             except subprocess.CalledProcessError as e:
-                print(f"[AgentForge] 跳过策略 {s.name}: 分支 {s.branch} 不可用")
+                self.display.warn(f"跳过策略 {s.name}: 分支 {s.branch} 不可用")
         if not experiments:
-            print("[AgentForge] 所有策略分支均不可用，跳过本轮")
+            self.display.skip_round("所有策略分支均不可用")
             t2 = time.time()
             round_result = RoundResult(
                 round=state.current_round, experiments=[],
@@ -158,9 +178,11 @@ class Orchestrator:
             state.current_round += 1
             self.state_file.save(state)
             return state
+        self.display.phase2_start(len(experiments))
         runner = ParallelRunner(experiments, self.config, timeout=345600, workdir=self.workdir)
         results = runner.run(N=state.N)
         t2 = time.time()
+        self.display.phase2_done((t2 - t1) / 60)
 
         # All-fail handling
         if SelfRepair.is_all_fail(results):
@@ -186,6 +208,11 @@ class Orchestrator:
         # Select winners
         d = self.config.target_direction
         winners = self.select_winners(results, d)
+
+        # Display results table
+        self.display.round_results(
+            results, winners, state.best.score, state.best.round,
+        )
 
         # Update state
         round_result = RoundResult(
