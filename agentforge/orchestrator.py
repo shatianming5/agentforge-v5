@@ -99,7 +99,7 @@ class Orchestrator:
             )
             for i, s in enumerate(strategies)
         ]
-        runner = ParallelRunner(experiments, self.config, timeout=7200, workdir=self.workdir)
+        runner = ParallelRunner(experiments, self.config, timeout=345600, workdir=self.workdir)
         results = runner.run(N=state.N)
         t2 = time.time()
 

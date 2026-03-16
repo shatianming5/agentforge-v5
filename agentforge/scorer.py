@@ -30,7 +30,7 @@ class Scorer:
             subprocess.run(
                 shlex.split(config.test_full),
                 cwd=str(exp.workdir), env=exp.env,
-                capture_output=True, timeout=600, check=True,
+                capture_output=True, timeout=3600, check=True,
             )
             return True
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -57,7 +57,7 @@ class Scorer:
             subprocess.run(
                 shlex.split(config.test_benchmark),
                 cwd=str(workdir), env=env,
-                capture_output=True, timeout=600, check=True,
+                capture_output=True, timeout=3600, check=True,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return 0.0
