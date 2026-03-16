@@ -27,6 +27,15 @@ class ProjectProfile:
     result_pattern: str = ""
     import_checks: str = ""
 
+    @staticmethod
+    def _unescape_code(s: str) -> str:
+        """处理 LLM 生成 JSON 中代码片段的双转义换行符。"""
+        if "\n" not in s and "\\n" in s:
+            s = s.replace("\\n", "\n")
+        if "\\t" in s and "\t" not in s:
+            s = s.replace("\\t", "\t")
+        return s
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProjectProfile:
         return cls(
@@ -38,14 +47,14 @@ class ProjectProfile:
             suggested_target=float(data["suggested_target"]),
             writable=list(data["writable"]),
             readonly=list(data["readonly"]),
-            metric_extraction=data["metric_extraction"],
+            metric_extraction=cls._unescape_code(data["metric_extraction"]),
             run_args=list(data.get("run_args", [])),
             baseline_value=data.get("baseline_value"),
             python_cmd=data.get("python_cmd", "python3"),
             needs_gpu=bool(data.get("needs_gpu", False)),
             result_location=data.get("result_location", "stdout"),
             result_pattern=data.get("result_pattern", ""),
-            import_checks=data.get("import_checks", ""),
+            import_checks=cls._unescape_code(data.get("import_checks", "")),
         )
 
     def to_dict(self) -> dict[str, Any]:

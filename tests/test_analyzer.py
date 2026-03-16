@@ -82,6 +82,43 @@ def test_profile_missing_required_field():
         ProjectProfile.from_dict({"description": "test"})
 
 
+def test_profile_unescape_code():
+    """Codex 输出双转义 \\n 时应自动转为真换行。"""
+    data = {
+        "description": "test",
+        "run_command": "python x.py",
+        "eval_metric": "acc",
+        "eval_direction": "maximize",
+        "eval_method": "parse",
+        "suggested_target": 0.9,
+        "writable": ["x.py"],
+        "readonly": [],
+        "metric_extraction": "import torch\\nscore = 0.9",
+        "import_checks": "import torch\\nimport numpy",
+    }
+    profile = ProjectProfile.from_dict(data)
+    assert "\n" in profile.metric_extraction
+    assert profile.metric_extraction == "import torch\nscore = 0.9"
+    assert profile.import_checks == "import torch\nimport numpy"
+
+
+def test_profile_preserves_real_newlines():
+    """已有真换行时不做额外处理。"""
+    data = {
+        "description": "test",
+        "run_command": "python x.py",
+        "eval_metric": "acc",
+        "eval_direction": "maximize",
+        "eval_method": "parse",
+        "suggested_target": 0.9,
+        "writable": ["x.py"],
+        "readonly": [],
+        "metric_extraction": "import torch\nscore = 0.9",
+    }
+    profile = ProjectProfile.from_dict(data)
+    assert profile.metric_extraction == "import torch\nscore = 0.9"
+
+
 from unittest.mock import patch, MagicMock
 from agentforge.analyzer import ProjectAnalyzer
 
