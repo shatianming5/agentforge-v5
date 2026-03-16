@@ -118,17 +118,14 @@ class ProjectAnalyzer:
         return ProjectProfile.from_dict(data)
 
     def analyze(self) -> ProjectProfile:
+        from agentforge.stream import stream_run
         af_dir = self.workdir / ".agentforge"
         af_dir.mkdir(parents=True, exist_ok=True)
         prompt = self._build_prompt()
-        result = subprocess.run(
+        result = stream_run(
             ["codex", "exec", "-s", "workspace-write", prompt],
-            cwd=str(self.workdir),
-            timeout=600,
-            capture_output=True,
-            text=True,
+            cwd=self.workdir, timeout=600, prefix="Codex",
         )
         if result.returncode != 0:
-            stderr = (result.stderr or "")[:500]
-            print(f"[AgentForge] Codex 分析警告 (exit {result.returncode}): {stderr}")
+            print(f"[AgentForge] Codex 分析警告 (exit {result.returncode}): {result.stdout[-500:]}")
         return self._read_profile()

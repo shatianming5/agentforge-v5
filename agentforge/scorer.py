@@ -31,15 +31,16 @@ class Scorer:
     @staticmethod
     def _run_tests(exp: Experiment, config: ChallengeConfig) -> bool:
         """Run full test suite. Return True if all tests pass."""
+        from agentforge.stream import stream_run
         try:
-            result = subprocess.run(
+            stream_run(
                 shlex.split(config.test_full),
-                cwd=str(exp.workdir), env=exp.env,
-                capture_output=True, text=True, timeout=3600, check=True,
+                cwd=exp.workdir, env=exp.env,
+                timeout=3600, prefix=f"Test exp-{exp.index}", check=True,
             )
             return True
         except subprocess.CalledProcessError as e:
-            print(f"[Scorer] test failed: {(e.stderr or e.stdout or '')[:300]}")
+            print(f"[Scorer] test failed: {(e.output or '')[:300]}")
             return False
         except subprocess.TimeoutExpired:
             print("[Scorer] test timed out")
@@ -62,14 +63,15 @@ class Scorer:
 
     @staticmethod
     def _run_benchmark(workdir: Path, config: ChallengeConfig, env: dict) -> float:
+        from agentforge.stream import stream_run
         try:
-            result = subprocess.run(
+            stream_run(
                 shlex.split(config.test_benchmark),
-                cwd=str(workdir), env=env,
-                capture_output=True, text=True, timeout=3600, check=True,
+                cwd=workdir, env=env,
+                timeout=3600, prefix="Benchmark", check=True,
             )
         except subprocess.CalledProcessError as e:
-            print(f"[Scorer] benchmark failed: {(e.stderr or e.stdout or '')[:300]}")
+            print(f"[Scorer] benchmark failed: {(e.output or '')[:300]}")
             return 0.0
         except subprocess.TimeoutExpired:
             print("[Scorer] benchmark timed out")

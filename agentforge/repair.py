@@ -41,27 +41,26 @@ class SelfRepair:
         """
         from agentforge.config import ChallengeConfig
 
+        from agentforge.stream import stream_run
         # 1. Try test suite
         try:
-            subprocess.run(
+            stream_run(
                 shlex.split(config.test_full),
-                cwd=str(exp_workdir), capture_output=True, text=True,
-                timeout=120, check=True,
+                cwd=exp_workdir, timeout=120, prefix="Repair-Test", check=True,
             )
         except subprocess.CalledProcessError as e:
-            return "test_failed", (e.stderr or e.stdout or "")[:500]
+            return "test_failed", (e.output or "")[:500]
         except subprocess.TimeoutExpired:
             return "test_failed", "test timed out"
 
         # 2. Try benchmark
         try:
-            result = subprocess.run(
+            stream_run(
                 shlex.split(config.test_benchmark),
-                cwd=str(exp_workdir), capture_output=True, text=True,
-                timeout=120, check=True,
+                cwd=exp_workdir, timeout=120, prefix="Repair-Bench", check=True,
             )
         except subprocess.CalledProcessError as e:
-            return "benchmark_error", (e.stderr or e.stdout or "")[:500]
+            return "benchmark_error", (e.output or "")[:500]
         except subprocess.TimeoutExpired:
             return "benchmark_error", "benchmark timed out"
 
@@ -135,16 +134,17 @@ class SelfRepair:
     @staticmethod
     def rebuild_venv(workdir: Path) -> None:
         import shutil
+        from agentforge.stream import stream_run
         venv_dir = workdir / ".agentforge" / "venv"
         if venv_dir.exists():
             shutil.rmtree(venv_dir)
-        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)],
-                      check=True, capture_output=True)
+        stream_run([sys.executable, "-m", "venv", str(venv_dir)],
+                   prefix="Venv", check=True)
         req_file = workdir / "requirements.txt"
         if req_file.exists():
-            subprocess.run(
+            stream_run(
                 [str(venv_dir / "bin" / "pip"), "install", "-r", str(req_file)],
-                check=False, capture_output=True, timeout=300,
+                prefix="Pip", timeout=300,
             )
 
     @staticmethod
