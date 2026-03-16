@@ -147,6 +147,26 @@ def logs(follow, workdir):
         click.echo(log_path.read_text())
 
 
+@cli.command()
+@click.option("--workdir", type=click.Path(), default=None)
+def validate(workdir):
+    """Validate challenge completeness."""
+    import sys
+    from agentforge.validate import run_validate
+    wd = _get_workdir(workdir)
+    sys.exit(0 if run_validate(wd) else 1)
+
+
+@cli.command()
+@click.option("--workdir", type=click.Path(), default=None)
+def publish(workdir):
+    """Publish challenge (validate → confirm → prompt push)."""
+    import sys
+    from agentforge.publish import run_publish
+    wd = _get_workdir(workdir)
+    sys.exit(0 if run_publish(wd) else 1)
+
+
 @cli.command(name="export")
 @click.option("--workdir", type=click.Path(), default=None)
 def export_best(workdir):

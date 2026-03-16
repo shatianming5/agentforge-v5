@@ -93,7 +93,7 @@ class TestSessionStateCreateInitial:
             rounds_max=10,
             gpu_hours_max=24.0,
         )
-        assert state.version == "5.0"
+        assert state.version == "5.1"
         assert state.session_id == "sess-abc"
         assert state.repo_url == "https://github.com/user/repo"
         assert state.status == "running"
@@ -170,6 +170,35 @@ class TestIsDone:
         """状态为 paused"""
         base_state.status = "paused"
         assert base_state.is_done(target_value=0.99) is True
+
+
+class TestIsDoneMinimize:
+    @pytest.fixture
+    def min_state(self):
+        hw = HardwareInfo("cuda", "A100 80GB", 4, 64, 512, 1000)
+        return SessionState.create_initial(
+            session_id="sess-min",
+            repo_url="https://github.com/user/repo",
+            hardware=hw,
+            N=4, gpus_per_experiment=1,
+            rounds_max=10, gpu_hours_max=24.0,
+            direction="minimize",
+        )
+
+    def test_initial_score_is_inf(self, min_state):
+        assert min_state.best.score == float("inf")
+
+    def test_target_reached_minimize(self, min_state):
+        min_state.best = BestResult(1.5, 3, "exp-005", "abc", "ckpt.pt")
+        assert min_state.is_done(target_value=1.8, direction="minimize") is True
+
+    def test_not_done_minimize(self, min_state):
+        min_state.best = BestResult(2.5, 1, "exp-001", "abc", "ckpt.pt")
+        assert min_state.is_done(target_value=1.8, direction="minimize") is False
+
+    def test_exact_target_minimize(self, min_state):
+        min_state.best = BestResult(1.8, 2, "exp-003", "abc", "ckpt.pt")
+        assert min_state.is_done(target_value=1.8, direction="minimize") is True
 
 
 # ---------------------------------------------------------------------------
@@ -316,5 +345,5 @@ class TestStateFile:
         sf.save(self._make_state())
         with open(sf.path) as f:
             data = json.load(f)
-        assert data["version"] == "5.0"
+        assert data["version"] == "5.1"
         assert isinstance(data["rounds"], list)

@@ -13,7 +13,8 @@ from agentforge.agent import AgentSession, CodexCLI, OutputParser
 from agentforge.analyzer import ProjectAnalyzer
 from agentforge.anti_oscillation import AntiOscillation
 from agentforge.cleanup import Cleanup
-from agentforge.config import ChallengeConfig, load_config
+from agentforge.config import ChallengeConfig, is_better, best_initial_score, load_config
+from agentforge.data import prepare_data
 from agentforge.confirm import InteractiveConfirm
 from agentforge.generator import ConfigGenerator
 from agentforge.experiment import ExperimentSetup
@@ -75,7 +76,9 @@ class Orchestrator:
         while not self._done(state) and not self._stop_flag():
             state = self._run_round(state)
             self.state_file.save(state)
-        state.status = "completed" if state.best.score >= self.config.target_value else "paused"
+        d = self.config.target_direction
+        done = is_better(state.best.score, self.config.target_value, d) or state.best.score == self.config.target_value
+        state.status = "completed" if done else "paused"
         self.state_file.save(state)
 
     def _init_or_resume(self) -> SessionState:
@@ -88,7 +91,10 @@ class Orchestrator:
             repo_url=str(self.workdir),
             hardware=hw, N=N, gpus_per_experiment=gpus_per,
             rounds_max=25, gpu_hours_max=200,
+            direction=self.config.target_direction,
         )
+        # 数据准备
+        prepare_data(self.workdir, self.config.data)
         # Snapshot credentials
         state.credentials = self._snapshot_credentials()
         # Snapshot env lockfile
@@ -178,7 +184,8 @@ class Orchestrator:
                         SelfRepair.rollback_to_commit(self.workdir, state.best.commit)
 
         # Select winners
-        winners = self.select_winners(results)
+        d = self.config.target_direction
+        winners = self.select_winners(results, d)
 
         # Update state
         round_result = RoundResult(
@@ -190,14 +197,18 @@ class Orchestrator:
         state.rounds.append(round_result)
 
         for r in results:
-            if r.score > state.best.score:
+            if is_better(r.score, state.best.score, d):
                 commit = self._get_branch_commit(r.branch)
                 state.best = BestResult(
                     score=r.score, round=state.current_round,
                     experiment=r.id, commit=commit, checkpoint="",
                 )
 
-        best_this_round = max((r.score for r in results), default=0.0)
+        ok_scores = [r.score for r in results if r.status == "ok" and r.score > 0]
+        if ok_scores:
+            best_this_round = min(ok_scores) if d == "minimize" else max(ok_scores)
+        else:
+            best_this_round = best_initial_score(d)
         state.score_trajectory.append(best_this_round)
 
         for r in results:
@@ -217,7 +228,7 @@ class Orchestrator:
         return state
 
     def _done(self, state: SessionState) -> bool:
-        return state.is_done(self.config.target_value)
+        return state.is_done(self.config.target_value, self.config.target_direction)
 
     def _get_branch_commit(self, branch: str) -> str:
         try:
@@ -260,10 +271,11 @@ class Orchestrator:
         return ""
 
     @staticmethod
-    def select_winners(results: list[StrategyResult]) -> list[str]:
+    def select_winners(results: list[StrategyResult], direction: str = "maximize") -> list[str]:
         ok_results = [r for r in results if r.status == "ok" and r.score > 0]
         if not ok_results:
             return []
         top_k = max(1, math.ceil(len(results) / 4))
-        sorted_results = sorted(ok_results, key=lambda r: r.score, reverse=True)
+        reverse = (direction != "minimize")
+        sorted_results = sorted(ok_results, key=lambda r: r.score, reverse=reverse)
         return [r.id for r in sorted_results[:top_k]]

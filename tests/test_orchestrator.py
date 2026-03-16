@@ -48,24 +48,35 @@ class TestOrchestrator:
         orch.config = _make_config()
         assert orch._done(state) is True
 
-    def test_select_winners_4(self):
+    def test_select_winners_4_maximize(self):
         results = [
             StrategyResult("e0", "s0", "b0", 0.85, "ok", None, 40, 45, 64),
             StrategyResult("e1", "s1", "b1", 0.70, "ok", None, 40, 45, 64),
             StrategyResult("e2", "s2", "b2", 0.90, "ok", None, 40, 45, 64),
             StrategyResult("e3", "s3", "b3", 0.60, "ok", None, 40, 45, 64),
         ]
-        winners = Orchestrator.select_winners(results)
+        winners = Orchestrator.select_winners(results, "maximize")
         assert "e2" in winners
-        assert len(winners) == 1  # ceil(4/4) = 1
+        assert len(winners) == 1
+
+    def test_select_winners_4_minimize(self):
+        results = [
+            StrategyResult("e0", "s0", "b0", 2.5, "ok", None, 40, 45, 64),
+            StrategyResult("e1", "s1", "b1", 1.8, "ok", None, 40, 45, 64),
+            StrategyResult("e2", "s2", "b2", 3.0, "ok", None, 40, 45, 64),
+            StrategyResult("e3", "s3", "b3", 1.5, "ok", None, 40, 45, 64),
+        ]
+        winners = Orchestrator.select_winners(results, "minimize")
+        assert "e3" in winners  # 1.5 是最小的
+        assert len(winners) == 1
 
     def test_select_winners_8(self):
         results = [
             StrategyResult(f"e{i}", f"s{i}", f"b{i}", 0.5+i*0.05, "ok", None, 40, 45, 64)
             for i in range(8)
         ]
-        winners = Orchestrator.select_winners(results)
-        assert len(winners) == 2  # ceil(8/4) = 2
+        winners = Orchestrator.select_winners(results, "maximize")
+        assert len(winners) == 2
 
     def test_select_winners_all_failed(self):
         results = [
@@ -73,6 +84,28 @@ class TestOrchestrator:
         ]
         winners = Orchestrator.select_winners(results)
         assert winners == []
+
+    def test_done_minimize(self):
+        state = _make_state()
+        state.best = BestResult(1.5, 1, "exp-1", "abc", "")
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.config = ChallengeConfig(
+            "Test", "Desc", "val_loss", 1.8, "minimize",
+            "echo smoke", "echo full", "echo bench",
+            ["src/"], ["tests/"],
+        )
+        assert orch._done(state) is True  # 1.5 < 1.8，达标
+
+    def test_not_done_minimize(self):
+        state = _make_state()
+        state.best = BestResult(2.5, 1, "exp-1", "abc", "")
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.config = ChallengeConfig(
+            "Test", "Desc", "val_loss", 1.8, "minimize",
+            "echo smoke", "echo full", "echo bench",
+            ["src/"], ["tests/"],
+        )
+        assert orch._done(state) is False  # 2.5 > 1.8，未达标
 
 
 def test_orchestrator_auto_setup_when_no_config(tmp_path):

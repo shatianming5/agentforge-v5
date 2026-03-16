@@ -100,16 +100,18 @@ class SessionState:
         gpus_per_experiment: int,
         rounds_max: int,
         gpu_hours_max: float,
+        direction: str = "maximize",
     ) -> SessionState:
+        from agentforge.config import best_initial_score
         return cls(
-            version="5.0",
+            version="5.1",
             session_id=session_id,
             repo_url=repo_url,
             status="running",
             hardware=hardware,
             N=N,
             gpus_per_experiment=gpus_per_experiment,
-            best=BestResult(0.0, 0, "", "", ""),
+            best=BestResult(best_initial_score(direction), 0, "", "", ""),
             current_round=0,
             score_trajectory=[],
             rounds=[],
@@ -120,8 +122,9 @@ class SessionState:
             credentials=Credentials(git_method="none", last_check=""),
         )
 
-    def is_done(self, target_value: float) -> bool:
-        if self.best.score >= target_value:
+    def is_done(self, target_value: float, direction: str = "maximize") -> bool:
+        from agentforge.config import is_better
+        if is_better(self.best.score, target_value, direction) or self.best.score == target_value:
             return True
         if self.budget.rounds_used >= self.budget.rounds_max:
             return True
